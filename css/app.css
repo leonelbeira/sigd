@@ -107,9 +107,9 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0
 #panel h3, #panel summary { margin: 0 0 10px; font-size: 18px; font-weight: 600; color: var(--ink); }
 #panel summary { cursor: pointer; margin: 0; min-height: 32px; display: flex; align-items: center; }
 #panel details[open] summary { margin-bottom: 10px; }
-.presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.presets button { border: 1px solid var(--line); background: var(--bg2); border-radius: 14px; padding: 8px 2px 6px; display: grid; justify-items: center; gap: 2px; font-size: 14px; font-weight: 600; min-height: 72px; }
-.presets button span { font-size: 28px; line-height: 1.1; }
+.presets { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.presets button { border: 1px solid var(--line); background: var(--bg2); border-radius: 14px; padding: 8px 1px 6px; display: grid; justify-items: center; gap: 2px; font-size: 13px; font-weight: 600; min-height: 70px; }
+.presets button span { font-size: 26px; line-height: 1.1; }
 .presets button:hover { border-color: var(--cyan); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 6px; }
 .chip { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 6px 12px 6px 8px; font-size: 15px; display: flex; align-items: center; gap: 6px; min-height: 40px; color: var(--mute); }
@@ -147,3 +147,26 @@ input[type=range] { width: 100%; accent-color: var(--cyan); height: 28px; }
 @media (prefers-reduced-motion: reduce) {
   .s-skull, #card, #prompt.pop { animation: none; }
 }
+
+/* níveis do desafio */
+.p-opts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.p-opts button { border: 2px solid var(--line); background: var(--bg2); color: var(--ink); border-radius: 16px; padding: 8px 14px; min-height: 64px; display: grid; justify-items: center; font-weight: 600; font-size: 16px; }
+.p-opts button small { font-weight: 400; color: var(--mute); font-size: 13px; }
+.p-opts button b { font-size: 26px; line-height: 1; }
+.p-opts button:hover { border-color: var(--yellow); }
+#prompt:has(.p-opts:not([hidden])) { flex-wrap: wrap; justify-content: center; }
+
+/* quiz */
+#quiz { position: absolute; left: 50%; top: 24%; transform: translateX(-50%); display: flex; gap: 14px; width: min(94%, 760px); justify-content: center; }
+#quiz button { position: relative; flex: 1; border: 3px solid #6fe3ff88; background: #0b1730e6; color: var(--ink); border-radius: 22px; padding: 14px 10px; min-height: 84px;
+  font-size: clamp(18px, 2.2vw, 26px); font-weight: 700; box-shadow: 0 8px 24px #000a; overflow: hidden; }
+#quiz button .fill { position: absolute; inset: 0; background: #ffd16655; transform-origin: left; transform: scaleX(0); pointer-events: none; }
+#quiz button.hot { border-color: var(--yellow); }
+#quiz button.right { border-color: #7dffa8; background: #0d3a24f0; }
+#quiz button.wrong { border-color: #ff6b7d; background: #3a0d16f0; opacity: .8; }
+
+/* gravação */
+#recBadge { position: absolute; left: 14px; top: 14px; display: flex; align-items: center; gap: 8px; background: #000b; padding: 6px 12px; border-radius: 999px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#recBadge i { width: 12px; height: 12px; border-radius: 50%; background: #ff3b4f; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .25; } }
+#btnRec.rec { background: #4a0d16; border-color: #ff3b4f; opacity: 1; }

@@ -10,13 +10,15 @@ export const LAYERS = {
   eyes:    { nome: 'Olhos',         emoji: '👀', cor: '#ffe066' },
   muscles: { nome: 'Músculos',      emoji: '💪', cor: '#ff5a6a' },
   hands:   { nome: 'Ossos da mão',  emoji: '✋', cor: '#d9f1ff' },
+  body:    { nome: 'Corpo',         emoji: '🩻', cor: '#b9c8ff' },
 };
 
 export const PRESETS = {
-  ossos:    { skull: true,  teeth: true,  spine: true,  brain: false, eyes: false, muscles: false, hands: true },
-  cerebro:  { skull: false, teeth: false, spine: false, brain: true,  eyes: true,  muscles: false, hands: false },
-  musculos: { skull: false, teeth: false, spine: false, brain: false, eyes: false, muscles: true,  hands: false },
-  tudo:     { skull: true,  teeth: true,  spine: true,  brain: true,  eyes: true,  muscles: true,  hands: true },
+  ossos:    { skull: true,  teeth: true,  spine: true,  brain: false, eyes: false, muscles: false, hands: true,  body: false },
+  corpo:    { skull: true,  teeth: true,  spine: true,  brain: false, eyes: false, muscles: false, hands: true,  body: true },
+  cerebro:  { skull: false, teeth: false, spine: false, brain: true,  eyes: true,  muscles: false, hands: false, body: false },
+  musculos: { skull: false, teeth: false, spine: false, brain: false, eyes: false, muscles: true,  hands: false, body: false },
+  tudo:     { skull: true,  teeth: true,  spine: true,  brain: true,  eyes: true,  muscles: true,  hands: true,  body: true },
 };
 
 // Ossos, cérebro e olhos (presos ao modelo 3D da cabeça)
@@ -39,7 +41,9 @@ export const PARTS = [
     toque: [[0, -9.3, 5.3]],
     facto: 'É o único osso da cabeça que consegues mexer à vontade! Abre e fecha a boca para o veres a trabalhar.' },
   { id: 'dentes', layer: 'teeth', nome: 'Dentes', cient: 'Dentes (esmalte e dentina)', a: [1.3, -5.6, 6.1], emoji: '🦷', toque: [[0, -6.0, 6.6]],
-    facto: 'As crianças têm 20 dentes de leite e os adultos podem ter 32. O esmalte dos dentes é a parte mais dura do corpo!' },
+    facto: 'As crianças têm 20 dentes de leite e os adultos podem ter 32. O esmalte dos dentes é a parte mais dura do corpo!',
+    nomeCrianca: 'Dentes de leite',
+    factoCrianca: 'Tens 20 dentes de leite. Por baixo deles já estão a crescer os dentes definitivos — vês? Por volta dos 6 anos começam a trocar.' },
   { id: 'vertebras', layer: 'spine', nome: 'Ossos do pescoço', cient: 'Vértebras cervicais', a: [0, -8.6, -2.2], emoji: '🦒',
     facto: 'Tens 7 vértebras no pescoço — tantas como uma girafa! Elas deixam-te rodar e baixar a cabeça.' },
   { id: 'cerebro', layer: 'brain', nome: 'Cérebro', cient: 'Cérebro (córtex)', a: [2.8, 7.6, 2.4], emoji: '🧠',
@@ -101,27 +105,80 @@ export const MUSCLES = [
 
 // Desafios: tocar numa parte ou fazer uma careta
 export const CHALLENGES = [
-  { tipo: 'toque', alvo: 'nasal', pede: 'Toca no osso do teu nariz!', ok: 'Boa! Esse é o osso nasal.', emoji: '👃' },
-  { tipo: 'toque', alvo: 'frontal', pede: 'Toca na tua testa!', ok: 'Isso! Debaixo da pele está o osso frontal.', emoji: '🤔' },
-  { tipo: 'toque', alvo: 'zigomatico', pede: 'Toca no osso da tua bochecha!', ok: 'Muito bem! É o osso zigomático.', emoji: '😊' },
-  { tipo: 'toque', alvo: 'mandibula', pede: 'Toca no teu queixo!', ok: 'Boa! O queixo faz parte da mandíbula.', emoji: '😮' },
-  { tipo: 'toque', alvo: 'temporal', pede: 'Toca ao lado da cabeça, por cima da orelha!', ok: 'Aí está o osso temporal. Lá dentro há ossinhos para ouvir.', emoji: '👂' },
-  { tipo: 'toque', alvo: 'cranio', pede: 'Põe o dedo no cimo da tua cabeça!', ok: 'Isso! O crânio protege o teu cérebro.', emoji: '💀' },
-  { tipo: 'toque', alvo: 'dentes', pede: 'Aponta para os teus dentes!', ok: 'Boa! Os dentes estão presos nos maxilares.', emoji: '🦷' },
-  { tipo: 'cara', alvo: 'mZigomatico', pede: 'Faz um sorriso bem grande!', ok: 'Boa! Para sorrir usaste os músculos zigomáticos.', emoji: '😁',
+  { tipo: 'toque', alvo: 'nasal', pede: 'Toca no osso do teu nariz!', pedeCient: 'Toca no teu osso nasal!', ok: 'Boa! Esse é o osso nasal.', emoji: '👃' },
+  { tipo: 'toque', alvo: 'frontal', pede: 'Toca na tua testa!', pedeCient: 'Toca no teu osso frontal!', ok: 'Isso! Debaixo da pele está o osso frontal.', emoji: '🤔' },
+  { tipo: 'toque', alvo: 'zigomatico', pede: 'Toca no osso da tua bochecha!', pedeCient: 'Toca no teu osso zigomático!', ok: 'Muito bem! É o osso zigomático.', emoji: '😊' },
+  { tipo: 'toque', alvo: 'mandibula', pede: 'Toca no teu queixo!', pedeCient: 'Toca na tua mandíbula, no queixo!', ok: 'Boa! O queixo faz parte da mandíbula.', emoji: '😮' },
+  { tipo: 'toque', alvo: 'temporal', pede: 'Toca ao lado da cabeça, por cima da orelha!', pedeCient: 'Toca no teu osso temporal, por cima da orelha!', ok: 'Aí está o osso temporal. Lá dentro há ossinhos para ouvir.', emoji: '👂' },
+  { tipo: 'toque', alvo: 'cranio', pede: 'Põe o dedo no cimo da tua cabeça!', pedeCient: 'Toca no cimo do teu crânio!', ok: 'Isso! O crânio protege o teu cérebro.', emoji: '💀' },
+  { tipo: 'toque', alvo: 'dentes', pede: 'Aponta para os teus dentes!', pedeCient: 'Aponta para os teus incisivos!', ok: 'Boa! Os dentes estão presos nos maxilares.', emoji: '🦷' },
+  { tipo: 'cara', alvo: 'mZigomatico', pede: 'Faz um sorriso bem grande!', pedeCient: 'Contrai os músculos zigomáticos: sorri!', ok: 'Boa! Para sorrir usaste os músculos zigomáticos.', emoji: '😁',
     teste: b => (b.mouthSmileLeft + b.mouthSmileRight) / 2 > 0.55 },
-  { tipo: 'cara', alvo: 'mFrontal', pede: 'Faz cara de surpresa! Levanta as sobrancelhas!', ok: 'Isso! O músculo frontal levantou as tuas sobrancelhas.', emoji: '😮',
+  { tipo: 'cara', alvo: 'mFrontal', pede: 'Faz cara de surpresa! Levanta as sobrancelhas!', pedeCient: 'Contrai o músculo frontal: levanta as sobrancelhas!', ok: 'Isso! O músculo frontal levantou as tuas sobrancelhas.', emoji: '😮',
     teste: b => b.browInnerUp > 0.55 || (b.browOuterUpLeft + b.browOuterUpRight) / 2 > 0.45 },
-  { tipo: 'cara', alvo: 'mCorrugador', pede: 'Faz cara de zangado!', ok: 'Que zangado! O músculo corrugador juntou as tuas sobrancelhas.', emoji: '😠',
+  { tipo: 'cara', alvo: 'mCorrugador', pede: 'Faz cara de zangado!', pedeCient: 'Contrai os corrugadores do supercílio: cara de zangado!', ok: 'Que zangado! O músculo corrugador juntou as tuas sobrancelhas.', emoji: '😠',
     teste: b => (b.browDownLeft + b.browDownRight) / 2 > 0.4 },
-  { tipo: 'cara', alvo: 'mOrbBoca', pede: 'Faz um beijinho!', ok: 'Mua! O músculo orbicular da boca fez o beijinho.', emoji: '😘',
+  { tipo: 'cara', alvo: 'mOrbBoca', pede: 'Faz um beijinho!', pedeCient: 'Contrai o orbicular da boca: faz um beijinho!', ok: 'Mua! O músculo orbicular da boca fez o beijinho.', emoji: '😘',
     teste: b => b.mouthPucker > 0.55 },
-  { tipo: 'cara', alvo: 'mandibula', pede: 'Abre muito a boca!', ok: 'Viste? A mandíbula desceu — é o único osso da cabeça que consegues mexer!', emoji: '😲',
+  { tipo: 'cara', alvo: 'mandibula', pede: 'Abre muito a boca!', pedeCient: 'Baixa a mandíbula: abre muito a boca!', ok: 'Viste? A mandíbula desceu — é o único osso da cabeça que consegues mexer!', emoji: '😲',
     teste: b => b.jawOpen > 0.5 },
-  { tipo: 'cara', alvo: 'mOrbOlho', pede: 'Fecha os olhos com força e depois abre!', ok: 'Muito bem! O músculo orbicular do olho fechou os teus olhos.', emoji: '😑',
+  { tipo: 'cara', alvo: 'mOrbOlho', pede: 'Fecha os olhos com força e depois abre!', pedeCient: 'Contrai os orbiculares dos olhos: fecha-os com força!', ok: 'Muito bem! O músculo orbicular do olho fechou os teus olhos.', emoji: '😑',
     teste: b => (b.eyeBlinkLeft + b.eyeBlinkRight) / 2 > 0.6 },
-  { tipo: 'cara', alvo: 'mMasseter', pede: 'Faz de conta que estás a mastigar!', ok: 'Nham nham! O masseter e o temporal fizeram o trabalho.', emoji: '😋',
+  { tipo: 'cara', alvo: 'mMasseter', pede: 'Faz de conta que estás a mastigar!', pedeCient: 'Põe os masseteres a trabalhar: mastiga!', ok: 'Nham nham! O masseter e o temporal fizeram o trabalho.', emoji: '😋',
     teste: (b, extra) => extra.mastigar > 0.5 },
+];
+
+// Esqueleto do corpo (tracking do corpo inteiro)
+export const BODY_PARTS = [
+  { id: 'costelas', nome: 'Costelas', cient: 'Costelas (caixa torácica)', emoji: '🫁',
+    facto: 'Tens 12 pares de costelas. Fazem uma gaiola de osso que protege o coração e os pulmões.' },
+  { id: 'esterno', nome: 'Osso do peito', cient: 'Esterno', emoji: '🛡️',
+    facto: 'As costelas da frente prendem-se a este osso achatado, no meio do peito, com cartilagem flexível.' },
+  { id: 'clavicula', nome: 'Clavícula', cient: 'Clavícula', emoji: '🦴',
+    facto: 'Vai do peito até ao ombro. Passa os dedos por baixo do pescoço e consegues senti-la!' },
+  { id: 'omoplata', nome: 'Omoplata', cient: 'Escápula (omoplata)', emoji: '🪽',
+    facto: 'É um osso em forma de triângulo nas costas. Mexe-se sempre que mexes o braço.' },
+  { id: 'coluna', nome: 'Coluna', cient: 'Coluna vertebral', emoji: '🐍',
+    facto: 'A coluna tem 33 vértebras e protege a medula espinal, o cabo que liga o cérebro ao resto do corpo.' },
+  { id: 'bacia', nome: 'Bacia', cient: 'Pélvis (bacia)', emoji: '🦋',
+    facto: 'A bacia aguenta o peso do corpo e liga a coluna às pernas.' },
+  { id: 'umero', nome: 'Osso do braço', cient: 'Úmero', emoji: '💪',
+    facto: 'O úmero é o único osso entre o ombro e o cotovelo.' },
+  { id: 'antebracoC', nome: 'Ossos do antebraço', cient: 'Rádio e cúbito (ulna)', emoji: '🤚',
+    facto: 'Entre o cotovelo e o pulso há dois ossos. Quando rodas a mão, um roda à volta do outro!' },
+  { id: 'femur', nome: 'Osso da coxa', cient: 'Fémur', emoji: '🦵',
+    facto: 'O fémur é o osso maior e mais forte do corpo!' },
+  { id: 'tibia', nome: 'Ossos da perna', cient: 'Tíbia e perónio', emoji: '🦿',
+    facto: 'A tíbia é a canela. Ao lado dela está o perónio, mais fininho.' },
+];
+
+// Níveis do Desafio
+export const LEVELS = {
+  pequeninos: { nome: 'Pequeninos', idade: '3–5 anos', emoji: '🐣' },
+  exploradores: { nome: 'Exploradores', idade: '6–9 anos', emoji: '🧭' },
+  cientistas: { nome: 'Cientistas', idade: '10+ anos', emoji: '🔬' },
+};
+
+// Desafios do corpo (só quando o corpo está a ser seguido)
+export const BODY_CHALLENGES = [
+  { tipo: 'corpo', alvo: 'umero', pede: 'Levanta os dois braços bem alto!', pedeCient: 'Levanta os dois úmeros acima da cabeça!',
+    ok: 'Boa! Os teus úmeros estão a apontar para o céu!', emoji: '🙌' },
+  { tipo: 'toque', alvo: 'esterno', pede: 'Põe a mão no meio do peito!', pedeCient: 'Toca no teu esterno!', ok: 'Isso! Aí está o esterno, que segura as costelas.', emoji: '🫁', corpo: true },
+  { tipo: 'toque', alvo: 'clavicula', pede: 'Toca no osso por baixo do pescoço!', pedeCient: 'Toca na tua clavícula!', ok: 'Muito bem! É a clavícula.', emoji: '🦴', corpo: true },
+];
+
+// Quiz (nível Cientistas): responde a apontar com o dedo ou a clicar
+export const QUIZ = [
+  { p: 'Quantos ossos tem um adulto?', o: ['106', '206', '306'], c: 1, explica: 'Um adulto tem 206 ossos. Os bebés nascem com mais, que depois se juntam.' },
+  { p: 'Quantos ossos tem cada mão?', o: ['17', '27', '37'], c: 1, explica: 'Cada mão tem 27 ossos: 8 no pulso, 5 na palma e 14 nos dedos.' },
+  { p: 'Quantas vértebras há no pescoço?', o: ['5', '7', '12'], c: 1, explica: 'São 7 vértebras cervicais — tantas como as de uma girafa!' },
+  { p: 'Qual é o maior osso do corpo?', o: ['Úmero', 'Crânio', 'Fémur'], c: 2, explica: 'O fémur, o osso da coxa, é o maior e o mais forte.' },
+  { p: 'Quantos dentes de leite têm as crianças?', o: ['20', '24', '32'], c: 0, explica: 'São 20 dentes de leite. Os adultos podem ter 32.' },
+  { p: 'Que osso da cabeça consegues mexer?', o: ['Maxila', 'Mandíbula', 'Osso frontal'], c: 1, explica: 'A mandíbula, o maxilar de baixo.' },
+  { p: 'Quantos pares de costelas temos?', o: ['10', '12', '14'], c: 1, explica: 'Temos 12 pares de costelas, ou seja, 24 costelas.' },
+  { p: 'Qual é a parte mais dura do corpo?', o: ['Esmalte dos dentes', 'Fémur', 'Crânio'], c: 0, explica: 'O esmalte dos dentes é ainda mais duro do que os ossos.' },
+  { p: 'Que parte do cérebro ajuda no equilíbrio?', o: ['Nervo óptico', 'Cerebelo', 'Medula'], c: 1, explica: 'O cerebelo ajuda-te a andar de bicicleta e a dançar sem cair.' },
+  { p: 'Que músculo usas para sorrir?', o: ['Zigomático', 'Masseter', 'Frontal'], c: 0, explica: 'Os zigomáticos puxam os cantos da boca para cima.' },
 ];
 
 export const TXT = {
@@ -131,4 +188,6 @@ export const TXT = {
   tocaIntro: 'Aponta com o dedo para uma parte da tua cara e espera um bocadinho!',
   desafioIntro: 'Vou pedir-te coisas. Consegues fazer todas?',
   aTrabalhar: 'a trabalhar!',
+  semCorpo: 'Afasta-te um pouco para a câmara ver os teus ombros 🙆',
+  escolheNivel: 'Escolhe o teu nível:',
 };

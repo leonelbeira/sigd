@@ -1,20 +1,20 @@
 // Espelho Raio-X — app principal
 // Câmara -> MediaPipe (cara 478 pontos + mãos 21 pontos) -> anatomia 3D (Three.js) + músculos 2D + etiquetas.
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
-import { FilesetResolver, FaceLandmarker, HandLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
+import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
 import { CANON, MIRROR } from './canon.js';
-import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT } from './parts.js';
+import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, LEVELS, BODY_CHALLENGES, QUIZ } from './parts.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const BS_SWAP = false;
-const DEBUG = { bs: null, tip: null, hand: null }; // usado nos testes automáticos
+const DEBUG = { bs: null, tip: null, hand: null, pose: null }; // usado nos testes automáticos
 const ARTIFACT = !!window.ESPELHO_ARTIFACT;           // versão publicada dentro do Claude (sem câmara)
 let capDownloads = null, capTTS = null;
 if (window.claude && typeof window.claude.use === 'function') {
-  window.claude.use('downloads').then(d => { capDownloads = d; if (ARTIFACT) $('#btnFoto').hidden = !d; }).catch(() => { });
+  window.claude.use('downloads').then(d => { capDownloads = d; if (ARTIFACT) $('#btnFoto').hidden = $('#btnRec').hidden = !d; }).catch(() => { });
   window.claude.use('tts').then(t => { capTTS = t; }).catch(() => { });
 }
 let sourceKind = null; // 'camera' | 'video' | 'image'
@@ -23,11 +23,13 @@ const CFG = Object.assign({
   wasm: 'vendor/mediapipe/wasm',
   faceModel: 'models/face_landmarker.task',
   handModel: 'models/hand_landmarker.task',
+  poseModel: 'models/pose_landmarker_lite.task',
 }, window.ESPELHO_CFG || {});
 // impressões digitais (SHA-256) dos modelos testados (iguais aos da pasta models/): só usamos ficheiros iguais a estes
 const MODEL_SHA = {
   face: '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff',
   hand: 'fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1',
+  pose: '59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a',
 };
 async function loadModel(url, sha) {
   const r = await fetch(url);
@@ -42,7 +44,8 @@ async function loadModel(url, sha) {
 
 // ------------------------------------------------------------------ definições
 const DEFAULTS = {
-  layers: { skull: true, teeth: true, spine: true, brain: false, eyes: true, muscles: false, hands: true },
+  layers: { skull: true, teeth: true, spine: true, brain: false, eyes: true, muscles: false, hands: true, body: false },
+  babyTeeth: false, level: 'exploradores',
   labels: true, look: 'xray', bright: 1, realMe: 0.45, anat: 1,
   reveal: 'all', lens: 0.26, feather: 0.25,
   fit: { size: 1, w: 1, h: 1, d: 1, x: 0, y: 0, z: 0 },
@@ -145,6 +148,8 @@ const KINDS = {
   pupil:  ['#fff5c0', '#101010', 1.0, 0.45, 0.12],
   nerve:  ['#ffd45a', '#f0d28c', 2.2, 0.05, 0.10],
   hand:   ['#d9f1ff', '#efe4cc', 2.0, 0.10, 0.60],
+  body:   ['#b9d7ff', '#efe4cc', 2.2, 0.06, 0.65],
+  cart:   ['#7aa8ff', '#c9d6ef', 1.6, 0.02, 0.70],
 };
 const MATS = { xray: {}, neon: {}, solid: {} };
 for (const [k, [cx, cs, pw, fill, hue]] of Object.entries(KINDS)) {
@@ -160,6 +165,7 @@ for (const [k, [cx, cs, pw, fill, hue]] of Object.entries(KINDS)) {
   }
   const sm = new THREE.MeshStandardMaterial({ color: cs, roughness: k === 'tooth' ? 0.35 : 0.62, metalness: 0, side: THREE.FrontSide });
   if (k === 'hand') { sm.depthTest = false; }
+  if (k === 'cart') { sm.transparent = true; sm.opacity = 0.55; }
   MATS.solid[k] = sm;
 }
 const allMeshes = []; // {mesh, kind, layer}
@@ -222,11 +228,11 @@ function makeHeadRig() {
   const r = { g, layer: {} };
   const L = (name) => (r.layer[name] = r.layer[name] || []);
   L('skull').push(addMesh(g, GEO.skull, 'bone', 'skull'));
-  L('teeth').push(addMesh(g, GEO.teethUpper, 'tooth', 'teeth'));
+  for (const [geo, kid] of [[GEO.teethUpper, false], [GEO.teethUpperKid, true]]) { const m = addMesh(g, geo, 'tooth', 'teeth'); m.userData.kid = kid; L('teeth').push(m); }
   const jaw = new THREE.Group(); jaw.position.copy(JAW_PIVOT); g.add(jaw);
   const jawIn = new THREE.Group(); jawIn.position.copy(JAW_PIVOT).multiplyScalar(-1); jaw.add(jawIn);
   L('skull').push(addMesh(jawIn, GEO.mandible, 'bone', 'skull'));
-  L('teeth').push(addMesh(jawIn, GEO.teethLower, 'tooth', 'teeth'));
+  for (const [geo, kid] of [[GEO.teethLower, false], [GEO.teethLowerKid, true]]) { const m = addMesh(jawIn, geo, 'tooth', 'teeth'); m.userData.kid = kid; L('teeth').push(m); }
   r.jaw = jaw;
   L('spine').push(addMesh(g, GEO.spine, 'spine', 'spine'));
   L('brain').push(addMesh(g, GEO.brain, 'brain', 'brain'));
@@ -259,20 +265,164 @@ function makeHandRig() {
   return { g, bones, carpals };
 }
 
-let headRigs = [], handRigs = [];
+let headRigs = [], handRigs = [], bodyRig = null;
+
+// ================================================================== CORPO (esqueleto com o tracking do corpo)
+// Referencial do tronco (cm): origem a meio dos ombros, x = esquerda da pessoa, y = cima, z = frente; ombros em x = ±18.
+// Referencial da bacia (cm): origem a meio das ancas, ancas em x = ±10.
+function mergeGeos(list) {
+  let nv = 0, ni = 0;
+  for (const g of list) { nv += g.attributes.position.count; ni += g.index ? g.index.count : g.attributes.position.count; }
+  const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), idx = new Uint32Array(ni);
+  let ov = 0, oi = 0;
+  for (const g of list) {
+    const n = g.attributes.position.count;
+    pos.set(g.attributes.position.array, ov * 3); nor.set(g.attributes.normal.array, ov * 3);
+    if (g.index) { const a = g.index.array; for (let i = 0; i < a.length; i++) idx[oi + i] = a[i] + ov; oi += a.length; }
+    else { for (let i = 0; i < n; i++) idx[oi + i] = ov + i; oi += n; }
+    ov += n;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3)); out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  return out;
+}
+const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
+function tubeGeo(pts, r, seg = 28, rs = 8) { return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), seg, r, rs, false); }
+function segGeo(base, a, b, sx, sz = sx) {
+  const d = new THREE.Vector3().subVectors(b, a), len = d.length(); d.normalize();
+  const m = new THREE.Matrix4().compose(a, new THREE.Quaternion().setFromUnitVectors(UP, d), new THREE.Vector3(sx, len, sz));
+  return base.clone().applyMatrix4(m);
+}
+function capsGeo(a, b, sx, sz) {
+  const d = new THREE.Vector3().subVectors(b, a), len = d.length(); d.normalize();
+  const g = new THREE.CapsuleGeometry(1, Math.max(0.1, len - 2), 6, 16);
+  const m = new THREE.Matrix4().compose(a.clone().add(b).multiplyScalar(0.5), new THREE.Quaternion().setFromUnitVectors(UP, d), new THREE.Vector3(sx, 1, sz));
+  return g.applyMatrix4(m);
+}
+const spineZ = y => y > -27 ? -4.5 - 1.0 * Math.sin(Math.PI * clamp((-1 - y) / 26, 0, 1)) : -4.5 + 1.2 * Math.sin(Math.PI * clamp((-27 - y) / 13, 0, 1));
+const sternZ = y => lerp(6.1, 8.5, clamp((-3 - y) / 19, 0, 1));
+function buildTorsoGeos() {
+  const bones = [], cart = [];
+  const A = [6.5, 9.5, 11.2, 12.4, 13.2, 13.7, 13.9, 13.8, 13.4, 12.7, 11.5, 10.0];
+  const B = [5.0, 6.8, 7.8, 8.4, 8.7, 8.9, 9.0, 9.0, 8.8, 8.4, 7.8, 7.0];
+  const DROP = [2.5, 3.5, 4.5, 5.5, 6.0, 6.5, 7.0, 7.0, 6.5, 6.0, 4.0, 3.0];
+  for (let i = 0; i < 12; i++) {
+    const yb = -1 - 2.3 * i;
+    const end = i < 7 ? Math.PI - Math.asin(1.7 / A[i]) : i < 10 ? 2.45 : i === 10 ? 1.75 : 1.45;
+    const cz = i < 7 ? sternZ(yb - DROP[i]) - B[i] * Math.cos(Math.asin(1.7 / A[i])) : -0.5;
+    const cartFrom = i < 7 ? end - 0.5 : i < 10 ? end - 0.42 : 99;
+    for (const s of [-1, 1]) {
+      const bonePts = [v3(s * 1.3, yb + 0.3, spineZ(yb) - 0.6)], cartPts = [];
+      const N = 22;
+      for (let k = 0; k <= N; k++) {
+        const ph = 0.28 + (end - 0.28) * k / N;
+        const p = v3(s * A[i] * Math.sin(ph), yb - DROP[i] * Math.pow((1 - Math.cos(ph)) / 2, 1.1), cz - B[i] * Math.cos(ph));
+        if (ph <= cartFrom) bonePts.push(p); else { if (!cartPts.length) cartPts.push(bonePts[bonePts.length - 1].clone()); cartPts.push(p); }
+      }
+      bones.push(tubeGeo(bonePts, i === 0 ? 0.55 : 0.5, 40));
+      if (cartPts.length > 1) cart.push(tubeGeo(cartPts, 0.42, 12));
+    }
+  }
+  // esterno (manúbrio, corpo, apêndice xifóide)
+  bones.push(capsGeo(v3(0, -3.0, sternZ(-3.0)), v3(0, -8.0, sternZ(-8.0)), 2.2, 0.5));
+  bones.push(capsGeo(v3(0, -8.6, sternZ(-8.6)), v3(0, -21.6, sternZ(-21.6)), 1.55, 0.45));
+  bones.push(capsGeo(v3(0, -21.8, sternZ(-21.8)), v3(0, -24.6, sternZ(-22) - 0.4), 0.6, 0.35));
+  // clavículas e omoplatas
+  for (const s of [-1, 1]) {
+    bones.push(tubeGeo([v3(s * 1.8, -3.0, 6.6), v3(s * 6, -2.2, 7.0), v3(s * 11, -1.2, 4.6), v3(s * 16.5, 1.2, 0.5)], 0.62, 30));
+    bones.push(tubeGeo([v3(s * 7.5, -4.5, -9.8), v3(s * 13, -1.5, -7), v3(s * 16.5, 1.2, -1.5)], 0.45));
+    bones.push(tubeGeo([v3(s * 7, -2, -9.6), v3(s * 7.3, -10, -9.4), v3(s * 7.6, -17, -9.0)], 0.38));
+    bones.push(tubeGeo([v3(s * 7.6, -17, -9.0), v3(s * 12.5, -9, -7), v3(s * 15.5, -3, -4.5)], 0.42));
+    bones.push(tubeGeo([v3(s * 7, -2, -9.6), v3(s * 12, -2.5, -7.5), v3(s * 14.5, -2.0, -5)], 0.32));
+    bones.push(tubeGeo([v3(s * 14.8, -2, -3.5), v3(s * 15.6, -1.5, 0.3)], 0.3, 8));
+  }
+  // coluna torácica (T1–T12) e lombar (L1–L5)
+  const spine = [];
+  for (let i = 0; i < 17; i++) {
+    const lumbar = i >= 12;
+    const y = lumbar ? -28.2 - 2.65 * (i - 12) : -1.3 - 2.3 * i;
+    const z = spineZ(y);
+    const r = lumbar ? 2.0 : 1.3 + 0.06 * i, h = lumbar ? 2.0 : 1.6;
+    spine.push(new THREE.CylinderGeometry(r, r, h, 16).translate(0, y, z));
+    if (lumbar) {
+      spine.push(segGeo(GEO.bone, v3(0, y, z - 1.4), v3(0, y - 0.5, z - 4.8), 0.5, 0.3));
+      for (const s of [-1, 1]) spine.push(segGeo(GEO.bone, v3(s * 1.4, y, z - 1.0), v3(s * 4.2, y, z - 1.6), 0.32));
+    } else {
+      spine.push(segGeo(GEO.bone, v3(0, y, z - 1.2), v3(0, y - 2.0, z - 4.6), 0.32));
+      for (const s of [-1, 1]) spine.push(segGeo(GEO.bone, v3(s * 1.0, y + 0.2, z - 1.0), v3(s * 3.0, y + 0.4, z - 2.2), 0.3));
+    }
+  }
+  return { bones: mergeGeos(bones), cart: mergeGeos(cart), spine: mergeGeos(spine) };
+}
+function buildPelvisGeo() {
+  const g = [];
+  for (const s of [-1, 1]) {
+    g.push(new THREE.TorusGeometry(2.3, 0.38, 8, 28).rotateY(Math.PI / 2).translate(s * 10, 0, 0.5));
+    const crest = [v3(s * 3.8, 6.5, -6.5), v3(s * 8, 9.5, -5), v3(s * 12.5, 9.5, -1), v3(s * 13, 7, 3), v3(s * 11.5, 4.5, 5.5)];
+    g.push(tubeGeo(crest, 0.55, 36));
+    for (const c of [v3(s * 6, 8.5, -5.8), v3(s * 9.5, 9.6, -3.5), v3(s * 12.5, 8.6, 0.5)]) g.push(tubeGeo([c, v3(s * 9.6, 2.2, 0.2)], 0.32, 8));
+    g.push(tubeGeo([v3(s * 3.8, 6.5, -6.5), v3(s * 5.2, 2, -5.5), v3(s * 8.5, 0.5, -2)], 0.5));
+    g.push(tubeGeo([v3(s * 11.5, 4.5, 5.5), v3(s * 10.6, 2.5, 3), v3(s * 10.2, 1.5, 2.0)], 0.45, 10));
+    g.push(tubeGeo([v3(s * 9, -0.5, 2.5), v3(s * 5, -2.0, 5.5), v3(s * 1.0, -3.5, 6.6)], 0.55));
+    g.push(tubeGeo([v3(s * 1.0, -3.5, 6.6), v3(s * 1.2, -6.0, 6.0)], 0.6, 8));
+    g.push(tubeGeo([v3(s * 1.2, -6.0, 6.0), v3(s * 4.5, -7.5, 3), v3(s * 7.5, -7.0, -0.5), v3(s * 9.2, -3, -1.0), v3(s * 9.5, -1.2, -0.3)], 0.55, 36));
+  }
+  // sacro e cóccix
+  g.push(capsGeo(v3(0, 6.5, -6.8), v3(0, -1.5, -8.2), 2.6, 0.6));
+  g.push(tubeGeo([v3(-4.0, 7, -6.8), v3(-2.2, 2.5, -7.8), v3(0, -2.5, -8.5), v3(2.2, 2.5, -7.8), v3(4.0, 7, -6.8)], 0.45, 30));
+  g.push(tubeGeo([v3(0, -2.5, -8.5), v3(0, -4.6, -7.8)], 0.35, 8));
+  return mergeGeos(g);
+}
+// ossos dos membros: [ponto A, ponto B, id, espessura (fracção da largura dos ombros), desvio lateral]
+const LIMBS = [
+  [11, 13, 'umero', 0.032, 0], [12, 14, 'umero', 0.032, 0],
+  [13, 15, 'antebracoC', 0.019, 1], [13, 15, 'antebracoC', 0.016, -1], [14, 16, 'antebracoC', 0.019, -1], [14, 16, 'antebracoC', 0.016, 1],
+  [23, 25, 'femur', 0.042, 0], [24, 26, 'femur', 0.042, 0],
+  [25, 27, 'tibia', 0.034, 0], [25, 27, 'tibia', 0.015, 1], [26, 28, 'tibia', 0.034, 0], [26, 28, 'tibia', 0.015, -1],
+  [27, 29, 'pe', 0.03, 0], [28, 30, 'pe', 0.03, 0], [27, 31, 'pe', 0.016, 0], [28, 32, 'pe', 0.016, 0],
+  [15, 17, 'mao', 0.011, 0], [15, 19, 'mao', 0.011, 0], [15, 21, 'mao', 0.011, 0],
+  [16, 18, 'mao', 0.011, 0], [16, 20, 'mao', 0.011, 0], [16, 22, 'mao', 0.011, 0],
+];
+function makeBodyRig() {
+  const t = buildTorsoGeos();
+  const torso = new THREE.Group(); torso.matrixAutoUpdate = false; scene.add(torso);
+  addMesh(torso, t.bones, 'body', 'body'); addMesh(torso, t.cart, 'cart', 'body'); addMesh(torso, t.spine, 'spine', 'body');
+  const pelvis = new THREE.Group(); pelvis.matrixAutoUpdate = false; scene.add(pelvis);
+  addMesh(pelvis, buildPelvisGeo(), 'body', 'body');
+  const limbs = new THREE.Group(); scene.add(limbs);
+  const bones = LIMBS.map(() => addMesh(limbs, GEO.bone, 'body', 'body'));
+  const patellas = [0, 1].map(() => addMesh(limbs, GEO.carpal, 'body', 'body'));
+  torso.visible = pelvis.visible = limbs.visible = false;
+  return { torso, pelvis, limbs, bones, patellas, X: V(), Y: V(), Z: V(), C: V(), k: 1, ky: 1, hasHips: false, hip: { C: V(), X: V(), k: 1 } };
+}
+
 
 // ------------------------------------------------------------------ MediaPipe
 let faceLM = null, handLM = null;
+let fileset = null;
+const forceCPU = /[?&]cpu\b/.test(location.search);
+async function mkTask(Cls, opts) {
+  if (forceCPU) return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } });
+  try { return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'GPU' } }); }
+  catch (e) { console.warn('GPU indisponível, a usar CPU', e); return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } }); }
+}
+// o modelo do corpo só é carregado quando é preciso
+let poseLM = null, poseLoading = null;
+function ensurePose() {
+  if (poseLM || poseLoading || !fileset) return;
+  poseLoading = (async () => {
+    toast('🩻 A preparar o esqueleto do corpo…', 2200);
+    const buf = await loadModel(CFG.poseModel, CFG.checkSha === false ? null : MODEL_SHA.pose);
+    poseLM = await mkTask(PoseLandmarker, { baseOptions: { modelAssetBuffer: buf }, runningMode: 'VIDEO', numPoses: 1,
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
+  })().catch(e => { console.error(e); toast('Não consegui carregar o modelo do corpo.'); poseLoading = null; });
+}
 async function loadVision(onMsg) {
-  const fileset = await FilesetResolver.forVisionTasks(CFG.wasm);
+  fileset = await FilesetResolver.forVisionTasks(CFG.wasm);
   onMsg('A preparar o laboratório… a carregar os modelos de IA');
   const [faceBuf, handBuf] = await Promise.all([loadModel(CFG.faceModel, CFG.checkSha === false ? null : MODEL_SHA.face), loadModel(CFG.handModel, CFG.checkSha === false ? null : MODEL_SHA.hand)]);
-  const forceCPU = /[?&]cpu\b/.test(location.search);
-  const mk = async (Cls, opts) => {
-    if (forceCPU) return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } });
-    try { return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'GPU' } }); }
-    catch (e) { console.warn('GPU indisponível, a usar CPU', e); return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } }); }
-  };
+  const mk = mkTask;
   onMsg('A preparar o laboratório… a aprender a ver caras');
   faceLM = await mk(FaceLandmarker, {
     baseOptions: { modelAssetBuffer: faceBuf }, runningMode: 'VIDEO', numFaces: 2,
@@ -312,6 +462,7 @@ function makeFaceSlot(i) {
 }
 function makeHandSlot(i) { return { i, active: false, lost: 0, filt: new OneEuro(21 * 3, 1.6, 0.02), lm: null, rig: null, J: Array.from({ length: 21 }, V), hs: 1 }; }
 const faces = [makeFaceSlot(0), makeFaceSlot(1)];
+const body = { active: false, lost: 0, filt: new OneEuro(33 * 3, 1.3, 0.015), lm: null, vis: new Float32Array(33), J: Array.from({ length: 33 }, () => new THREE.Vector3()), w: 1 };
 const hands = [makeHandSlot(0), makeHandSlot(1)];
 
 function assignSlots(slots, items, keyFn, t) {
@@ -458,6 +609,21 @@ function detect(now) {
     }
     for (const h of hands) if (h.active && h.lost > 8) h.active = false;
   } else if (!doHands) hands.forEach(h => (h.active = false));
+
+  // corpo
+  const needPose = S.layers.body || (mode === 'desafio' && ch && ch.list[ch.i]?.corpo);
+  if (needPose) ensurePose();
+  if (poseLM && needPose && !(handSkip && frameN % 2 === 0)) {
+    const pr = poseLM.detectForVideo(source, ts);
+    const l = DEBUG.pose ? DEBUG.pose.map(([x, y, z, v = 1]) => ({ x: x / vw, y: y / vh, z: z / vw, visibility: v })) : pr.landmarks?.[0];
+    if (l) {
+      const raw = new Float32Array(99);
+      for (let i = 0; i < 33; i++) { raw[i * 3] = l[i].x * vw; raw[i * 3 + 1] = l[i].y * vh; raw[i * 3 + 2] = l[i].z * vw; body.vis[i] = lerp(body.vis[i], l[i].visibility ?? 1, 0.5); }
+      if (!body.active) body.filt.reset();
+      body.lm = body.filt.filter(raw, t); body.active = true; body.lost = 0;
+      for (let i = 0; i < 33; i++) body.J[i].set(body.lm[i * 3], -body.lm[i * 3 + 1], -body.lm[i * 3 + 2]);
+    } else if (++body.lost > 10) body.active = false;
+  } else if (!needPose) body.active = false;
   return true;
 }
 
@@ -487,7 +653,7 @@ function updateHead(f) {
     r.eyes[e].quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), d);
   }
   r.g.visible = true;
-  for (const [layer, list] of Object.entries(r.layer)) for (const m of list) m.visible = !!S.layers[layer];
+  for (const [layer, list] of Object.entries(r.layer)) for (const m of list) m.visible = !!S.layers[layer] && (m.userData.kid === undefined || m.userData.kid === !!S.babyTeeth);
 }
 const hv = Array.from({ length: 8 }, V);
 function handPoint(h, key, out) {
@@ -501,6 +667,80 @@ function handPoint(h, key, out) {
   return out;
 }
 const hq = new THREE.Quaternion();
+const VIS = 0.5;
+function updateBody() {
+  const b = bodyRig, J = body.J, vis = body.vis;
+  const on = body.active && (S.layers.body || (mode === 'desafio' && ch?.list[ch.i]?.corpo)) && vis[11] > VIS && vis[12] > VIS;
+  b.torso.visible = b.pelvis.visible = b.limbs.visible = on;
+  b.on = on;
+  if (!on) return;
+  // tronco
+  b.C.addVectors(J[11], J[12]).multiplyScalar(0.5);
+  b.X.subVectors(J[11], J[12]); const w = b.X.length(); b.X.divideScalar(w); body.w = w;
+  b.k = w / 36;
+  b.hasHips = vis[23] > VIS && vis[24] > VIS && J[23].y > -vh * 1.05;
+  const H = hv[0].addVectors(J[23], J[24]).multiplyScalar(0.5);
+  if (b.hasHips) b.Y.subVectors(b.C, H); else b.Y.subVectors(J[0], b.C);
+  b.Y.addScaledVector(b.X, -b.Y.dot(b.X)).normalize();
+  b.Z.crossVectors(b.X, b.Y);
+  b.ky = b.hasHips ? clamp(b.C.clone().sub(H).dot(b.Y) / 47, b.k * 0.7, b.k * 1.5) : b.k;
+  const k = b.k, ky = b.ky;
+  b.torso.matrix.set(b.X.x * k, b.Y.x * ky, b.Z.x * k, b.C.x, b.X.y * k, b.Y.y * ky, b.Z.y * k, b.C.y, b.X.z * k, b.Y.z * ky, b.Z.z * k, b.C.z, 0, 0, 0, 1);
+  b.torso.matrixWorldNeedsUpdate = true;
+  // bacia
+  b.pelvis.visible = b.hasHips;
+  if (b.hasHips) {
+    const hx = hv[1].subVectors(J[23], J[24]); const hw = hx.length(); hx.divideScalar(hw);
+    const hk = hw / 20, hz = hv[2].crossVectors(hx, b.Y);
+    b.hip.C.copy(H); b.hip.X.copy(hx); b.hip.k = hk;
+    b.pelvis.matrix.set(hx.x * hk, b.Y.x * hk, hz.x * hk, H.x, hx.y * hk, b.Y.y * hk, hz.y * hk, H.y, hx.z * hk, b.Y.z * hk, hz.z * hk, H.z, 0, 0, 0, 1);
+    b.pelvis.matrixWorldNeedsUpdate = true;
+  }
+  // mãos já seguidas pelo modelo das mãos: não desenhar a mão aproximada
+  const handNear = wi => hands.some(h => h.active && h.lm && Math.hypot(h.lm[0] - body.lm[wi * 3], h.lm[1] - body.lm[wi * 3 + 1]) < vw * 0.12);
+  const skipHand = { 15: handNear(15), 16: handNear(16) };
+  LIMBS.forEach(([ia, ib, id, th, off], i) => {
+    const m = b.bones[i];
+    const ok = vis[ia] > VIS && vis[ib] > VIS && !(id === 'mao' && (skipHand[ia] || !S.layers.hands));
+    m.visible = ok; if (!ok) return;
+    const A = hv[3].copy(J[ia]), Bp = hv[4].copy(J[ib]);
+    const d = hv[5].subVectors(Bp, A); const len = d.length(); if (len < 1) { m.visible = false; return; } d.divideScalar(len);
+    if (off) { const side = hv[6].set(-d.y, d.x, 0).normalize().multiplyScalar(off * w * 0.022); A.add(side); Bp.add(side); }
+    m.position.copy(A).addScaledVector(d, len * 0.04);
+    m.quaternion.setFromUnitVectors(UP, d);
+    const rr = th * w;
+    m.scale.set(rr, len * 0.92, rr);
+  });
+  [[25, 23], [26, 24]].forEach(([kn, hp], i) => {
+    const m = b.patellas[i]; m.visible = vis[kn] > VIS && vis[hp] > VIS;
+    if (!m.visible) return;
+    const s = 0.035 * w; m.position.copy(J[kn]).addScaledVector(b.Z, s * 0.8); m.scale.set(s, s * 1.2, s * 0.6);
+  });
+}
+function torsoPt(x, y, z) {
+  const b = bodyRig; tmpV.set(x, y, z).applyMatrix4(b.torso.matrix); return [tmpV.x, -tmpV.y];
+}
+function bodyTargets(opts = {}) {
+  const b = bodyRig, out = [];
+  if (!b || !b.on || (!S.layers.body && !opts.all)) return out;
+  const J = body.J, vis = body.vis, P = BODY_PARTS;
+  const get = id => P.find(p => p.id === id);
+  const add = (id, xy, fc = 1) => { if (xy[0] > 0 && xy[0] < vw && xy[1] > 0 && xy[1] < vh) out.push({ kind: 'body', item: get(id), id, x: xy[0], y: xy[1], fc, layer: 'body' }); };
+  for (const s of [1, -1]) {
+    const fc = 0.6 + 0.4 * s * b.X.z;
+    add('costelas', torsoPt(s * 12.6, -14, 4.5), fc);
+    add('clavicula', torsoPt(s * 9, -1.8, 6.5), fc);
+    add('omoplata', torsoPt(s * 11.5, -9, -8.5), fc - 0.3);
+  }
+  add('esterno', torsoPt(0, -12, 8.6)); add('esterno', torsoPt(0, -5, 7.0), 0.9);
+  add('coluna', torsoPt(0, -33, -3.5), 0.9);
+  if (b.hasHips) { const hp = b.hip; tmpV.set(12 * hp.k, 0, 0); const p = hv[7].copy(hp.C).addScaledVector(hp.X, 12 * hp.k).addScaledVector(b.Y, 8 * hp.k); add('bacia', [p.x, -p.y]); }
+  const mid = (a, c) => [(body.lm[a * 3] + body.lm[c * 3]) / 2, (body.lm[a * 3 + 1] + body.lm[c * 3 + 1]) / 2];
+  for (const [a, c, id] of [[11, 13, 'umero'], [12, 14, 'umero'], [13, 15, 'antebracoC'], [14, 16, 'antebracoC'], [23, 25, 'femur'], [24, 26, 'femur'], [25, 27, 'tibia'], [26, 28, 'tibia']])
+    if (vis[a] > VIS && vis[c] > VIS) add(id, mid(a, c), (vis[a] + vis[c]) / 2);
+  return out;
+}
+
 function updateHand(h) {
   const r = h.rig, hs = h.hs;
   r.g.visible = S.layers.hands;
@@ -509,6 +749,7 @@ function updateHand(h) {
     const A = handPoint(h, a, hv[0]), B = handPoint(h, b, hv[1]);
     const d = hv[2].subVectors(B, A); const len = d.length(); if (len < 1e-3) return; d.divideScalar(len);
     const m = r.bones[i];
+    m.visible = !(i >= HAND_BONES.length - 2 && body.active && S.layers.body);
     m.position.copy(A).addScaledVector(d, len * 0.07);
     m.quaternion.setFromUnitVectors(UP, d);
     const rr = rad * hs;
@@ -671,7 +912,7 @@ function normalAt(C, k) {
 
 // ------------------------------------------------------------------ revelar (lupa / meia cara)
 let lensPos = null, pointer = null;
-function revealState(f0) {
+function revealState(f0, peek = false) {
   const st = { mode: S.reveal };
   if (S.reveal === 'lens') {
     let target = null;
@@ -680,7 +921,7 @@ function revealState(f0) {
     else if (pointer) target = pointer;
     else if (f0) target = [f0.lm[168 * 3], f0.lm[168 * 3 + 1]];
     else target = [vw / 2, vh / 2];
-    lensPos = lensPos ? [lerp(lensPos[0], target[0], 0.35), lerp(lensPos[1], target[1], 0.35)] : target;
+    if (!peek || !lensPos) lensPos = lensPos ? [lerp(lensPos[0], target[0], 0.35), lerp(lensPos[1], target[1], 0.35)] : target;
     st.c = lensPos; st.r = S.lens * Math.min(vw, vh); st.r0 = st.r * (1 - S.feather);
   } else if (S.reveal === 'half') {
     if (f0) {
@@ -728,7 +969,7 @@ function applyBackdrop() {
 // ------------------------------------------------------------------ alvos (etiquetas, toque, cliques)
 function collectTargets(f, opts = {}) {
   const out = [];
-  if (!f || !f.active) return out;
+  if (!f || !f.active || !f.rig) return out;
   const r = f.rig, p = f.pose;
   for (const part of PARTS) {
     if (!opts.all && !S.layers[part.layer]) continue;
@@ -774,17 +1015,20 @@ function primaryFace() {
 }
 
 // ------------------------------------------------------------------ etiquetas
+const itNome = it => (S.babyTeeth && it.nomeCrianca) ? it.nomeCrianca : it.nome;
+const itFacto = it => (S.babyTeeth && it.factoCrianca) ? it.factoCrianca : it.facto;
 function labelText(t) {
-  const it = t.item;
+  const it = { ...t.item, nome: itNome(t.item) };
   if (S.sci) return it.cient && it.cient !== it.nome ? `${it.nome} · ${it.cient}` : it.nome;
   return it.nome;
 }
 function drawLabels(f, st) {
   const ctx = lctx;
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, lCanvas.width, lCanvas.height);
-  if (!S.labels || !f) return;
+  const bOn = bodyRig?.on && S.layers.body;
+  if (!S.labels || (!f && !bOn)) return;
   const sc = lCanvas.width / vw; ctx.setTransform(sc, 0, 0, sc, 0, 0);
-  let T = [...collectTargets(f), ...handTargets()].filter(t => !t.extra);
+  let T = [...collectTargets(f), ...handTargets(), ...bodyTargets()].filter(t => !t.extra);
   // um rótulo por parte: o lado mais virado para a câmara
   const best = new Map();
   for (const t of T) { const k = t.kind + t.id; if (!best.has(k) || best.get(k).fc < t.fc) best.set(k, t); }
@@ -794,8 +1038,8 @@ function drawLabels(f, st) {
   const dens = T.length > 14 ? 0.84 : 1;
   const fs = 15 * u * dens, padX = 9 * u * dens, h = 26 * u * dens, gap = 4 * u * dens;
   ctx.font = `600 ${fs}px Fredoka, "Segoe UI", sans-serif`; ctx.textBaseline = 'middle';
-  const fx = vw - f.lm[168 * 3];    // centro da cara no ecrã (espelhado)
-  const half = f.faceW * 0.62 + 30 * u;
+  const fx = f ? vw - f.lm[168 * 3] : vw - bodyRig.C.x;    // centro da cara (ou do corpo) no ecrã (espelhado)
+  const half = f ? f.faceW * 0.62 + 30 * u : body.w * 0.55;
   const cols = { L: [], R: [] };
   for (const t of T) { t.dx = vw - t.x; t.dy = t.y; (t.dx < fx ? cols.L : cols.R).push(t); }
   for (const [side, list] of Object.entries(cols)) {
@@ -885,12 +1129,12 @@ function showCard(t, say = true) {
   const it = t.item;
   selected = { id: t.id, kind: t.kind, until: performance.now() + 6000 };
   $('#card .c-emoji').textContent = it.emoji || '✨';
-  $('#card .c-title').textContent = it.nome;
-  $('#card .c-sci').textContent = it.cient && it.cient !== it.nome ? it.cient : '';
-  $('#card .c-text').textContent = it.facto;
+  $('#card .c-title').textContent = itNome(it);
+  $('#card .c-sci').textContent = it.cient && it.cient !== itNome(it) ? it.cient : '';
+  $('#card .c-text').textContent = itFacto(it);
   $('#card').hidden = false;
   $('#card').style.animation = 'none'; void $('#card').offsetWidth; $('#card').style.animation = '';
-  if (say) speak(`${it.nome}. ${it.facto}`);
+  if (say) speak(`${itNome(it)}. ${itFacto(it)}`);
   clearTimeout(cardTimer);
   cardTimer = setTimeout(() => { $('#card').hidden = true; }, 22000);
   sndTick();
@@ -915,7 +1159,7 @@ let ch = null;
 function setMode(m) {
   mode = m;
   $$('.modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
-  $('#prompt').hidden = true; ch = null; dwell.id = null;
+  $('#prompt').hidden = true; ch = null; dwell.id = null; hideQuiz();
   $('#card').hidden = true; selected = null;
   if (m === 'tocar') {
     S.layers.hands = true; refreshUI();
@@ -929,13 +1173,20 @@ function setMode(m) {
       promptShow('🎥', 'O Desafio precisa de movimento: usa a câmara ou um vídeo.', '', null);
       return;
     }
-    const extra = sourceKind === 'video' ? ' Num vídeo gravado só passa se lá estiverem as caretas certas!' : '';
-    promptShow('⭐', `Desafio! ${TXT.desafioIntro}${extra}`, '', 'Começar ▶', startChallenge);
-    speak(`Desafio! ${TXT.desafioIntro}`);
+    chooseLevel();
   }
 }
-function promptShow(emoji, text, stars, btn, onBtn, cls = '') {
+function chooseLevel() {
+  const extra = sourceKind === 'video' ? ' (Num vídeo gravado só passa se lá estiverem as caretas certas!)' : '';
+  promptShow('⭐', `Desafio! ${TXT.escolheNivel}${extra}`, '', null, null, '',
+    Object.entries(LEVELS).map(([k, l]) => ({ html: `<b>${l.emoji}</b>${l.nome}<small>${l.idade}</small>`, on: () => { S.level = k; saveSettings(); startChallenge(); } })));
+  speak(`Desafio! ${TXT.desafioIntro} ${TXT.escolheNivel}`);
+}
+function promptShow(emoji, text, stars, btn, onBtn, cls = '', opts = null) {
   const p = $('#prompt');
+  const po = p.querySelector('.p-opts');
+  po.hidden = !opts; po.innerHTML = '';
+  if (opts) for (const o of opts) { const b = document.createElement('button'); b.innerHTML = o.html; b.onclick = o.on; po.appendChild(b); }
   p.hidden = false; p.className = cls;
   p.querySelector('.p-emoji').textContent = emoji;
   p.querySelector('.p-text').textContent = text;
@@ -946,33 +1197,78 @@ function promptShow(emoji, text, stars, btn, onBtn, cls = '') {
 }
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 function startChallenge() {
-  const face = shuffle(CHALLENGES.filter(c => c.tipo === 'cara')).slice(0, 4);
-  const touch = shuffle(CHALLENGES.filter(c => c.tipo === 'toque')).slice(0, 4);
-  const list = []; for (let i = 0; i < 4; i++) list.push(face[i], touch[i]);
-  ch = { list, i: -1, stars: 0, phase: 'next', t: 0, hold: 0 };
+  const lvl = S.level in LEVELS ? S.level : 'exploradores';
+  const withBody = S.layers.body && bodyRig?.on;
+  const face = shuffle(CHALLENGES.filter(c => c.tipo === 'cara'));
+  const touch = shuffle(CHALLENGES.filter(c => c.tipo === 'toque'));
+  const bodyC = shuffle(BODY_CHALLENGES.slice());
+  let list = [];
+  if (lvl === 'pequeninos') {
+    list = face.slice(0, withBody ? 5 : 6);
+    if (withBody) list.splice(2, 0, BODY_CHALLENGES[0]);
+  } else if (lvl === 'exploradores') {
+    const t = touch.slice(0, 4), f = face.slice(0, 4);
+    if (withBody) { t[3] = bodyC.find(c => c.tipo === 'toque'); f[3] = BODY_CHALLENGES[0]; }
+    for (let i = 0; i < 4; i++) list.push(f[i], t[i]);
+  } else {
+    const q = shuffle(QUIZ.slice()).slice(0, 3).map(x => ({ tipo: 'quiz', q: x, pede: x.p, emoji: '❓', alvo: null }));
+    const t = touch.slice(0, 3), f = face.slice(0, 2);
+    if (withBody) t[2] = bodyC.find(c => c.tipo === 'toque');
+    list = [t[0], q[0], f[0], t[1], q[1], f[1], t[2], q[2]];
+  }
+  ch = { list: list.filter(Boolean), i: -1, stars: 0, phase: 'next', t: 0, hold: 0, lvl };
   nextRound();
 }
+const pedido = c => (ch?.lvl === 'cientistas' && c.pedeCient) ? c.pedeCient : c.pede;
 function starsStr() { return '⭐'.repeat(ch.stars) + '☆'.repeat(ch.list.length - ch.stars); }
 function nextRound() {
   ch.i++; ch.hold = 0; ch.t = performance.now();
   if (ch.i >= ch.list.length) {
     ch.phase = 'end';
     const msg = ch.stars === ch.list.length ? `Incrível! Fizeste tudo! ${ch.stars} estrelas!` : `Fizeste ${ch.stars} de ${ch.list.length}! Muito bem!`;
-    promptShow('🏆', msg, starsStr(), 'Jogar outra vez', startChallenge, 'ok');
+    hideQuiz();
+    promptShow('🏆', msg, starsStr(), null, null, 'ok', [
+      { html: '<b>🔁</b>Jogar outra vez', on: startChallenge },
+      { html: '<b>🎚️</b>Mudar de nível', on: chooseLevel }]);
     speak(msg); confetti(vw / 2, vh * 0.35, 160); sndOk();
     return;
   }
   ch.phase = 'ask';
   const c = ch.list[ch.i];
-  promptShow(c.emoji, c.pede, starsStr(), null);
-  speak(c.pede);
+  if (c.tipo === 'quiz') showQuiz(c.q); else hideQuiz();
+  promptShow(c.emoji, pedido(c), starsStr(), null);
+  speak(pedido(c));
 }
-function roundOk(x, y) {
+// ---------- quiz (responde com o dedo ou com um clique)
+const quizEl = $('#quiz');
+function showQuiz(q) {
+  quizEl.hidden = false;
+  quizEl.innerHTML = q.o.map((o, i) => `<button data-i="${i}"><span class="fill"></span>${o}</button>`).join('');
+  quizEl.dwell = { i: -1, t: 0 };
+}
+function hideQuiz() { quizEl.hidden = true; quizEl.innerHTML = ''; }
+quizEl.addEventListener('click', e => { const b = e.target.closest('button'); if (b) answerQuiz(+b.dataset.i); });
+function answerQuiz(i) {
+  if (!ch || ch.phase !== 'ask') return;
+  const c = ch.list[ch.i]; if (c?.tipo !== 'quiz') return;
+  const btns = [...quizEl.querySelectorAll('button')];
+  btns.forEach((b, k) => { b.classList.toggle('right', k === c.q.c); b.classList.toggle('wrong', k === i && i !== c.q.c); });
+  const r = btns[i]?.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+  const x = r ? (r.left + r.width / 2 - sr.left) / sr.width * vw : vw / 2, y = r ? (r.top - sr.top) / sr.height * vh : vh / 3;
+  if (i === c.q.c) roundOk(x, y, `Certo! ${c.q.explica}`);
+  else {
+    ch.phase = 'ok'; ch.t = performance.now();
+    const msg = `Quase! A resposta certa é ${c.q.o[c.q.c]}. ${c.q.explica}`;
+    promptShow('🤔', msg, starsStr(), null); speak(msg);
+  }
+}
+function roundOk(x, y, msg = null) {
   const c = ch.list[ch.i];
   ch.phase = 'ok'; ch.stars++; ch.t = performance.now();
-  promptShow('🎉', c.ok, starsStr(), null, null, 'ok');
-  speak(c.ok); sndOk(); confetti(x ?? vw / 2, y ?? vh * 0.3);
-  const it = [...PARTS, ...MUSCLES].find(p => p.id === c.alvo);
+  const txt = msg || c.ok;
+  promptShow('🎉', txt, starsStr(), null, null, 'ok');
+  speak(txt); sndOk(); confetti(x ?? vw / 2, y ?? vh * 0.3);
+  const it = [...PARTS, ...MUSCLES, ...BODY_PARTS].find(p => p.id === c.alvo);
   if (it) selected = { id: it.id, until: performance.now() + 3500 };
 }
 function fingerTips() {
@@ -991,11 +1287,11 @@ let noHandSince = 0;
 function updateInteraction(f0, dt, now) {
   const tips = fingerTips();
   if (!tips.length) { if (!noHandSince) noHandSince = now; } else noHandSince = 0;
-  const R = f0 ? f0.faceW * 0.13 : vw * 0.05;
+  const R = f0 ? f0.faceW * 0.13 : (bodyRig?.on ? body.w * 0.1 : vw * 0.05);
   fxDraw.tips = tips; fxDraw.progress = null; fxDraw.hintAt = null;
 
-  if (mode === 'tocar' && f0) {
-    const targets = [...collectTargets(f0, { touch: true })];
+  if (mode === 'tocar' && (f0 || bodyRig?.on)) {
+    const targets = [...collectTargets(f0, { touch: true }), ...bodyTargets()];
     const hit = nearestTarget(tips, targets, R);
     if (hit) {
       if (dwell.id === hit.t.id + hit.t.kind) dwell.t += dt; else { dwell.id = hit.t.id + hit.t.kind; dwell.t = 0; }
@@ -1015,8 +1311,27 @@ function updateInteraction(f0, dt, now) {
         const ok = c.teste(f0.bs, { mastigar: f0.chew });
         ch.hold = ok ? ch.hold + dt : Math.max(0, ch.hold - dt * 2);
         if (ch.hold > (c.alvo === 'mMasseter' ? 0.8 : 0.35)) roundOk(vw - f0.lm[1 * 3], f0.lm[1 * 3 + 1] - f0.faceW * 0.6);
-      } else if (c.tipo === 'toque' && f0) {
-        const targets = collectTargets(f0, { all: true, touch: true }).filter(t => t.id === c.alvo && t.kind === 'part');
+      } else if (c.tipo === 'corpo') {
+        const v = body.vis, l = body.lm;
+        const ok = body.active && l && v[15] > VIS && v[16] > VIS && l[15 * 3 + 1] < l[1] && l[16 * 3 + 1] < l[1];
+        ch.hold = ok ? ch.hold + dt : Math.max(0, ch.hold - dt);
+        if (ok && ch.hold > 0.4) roundOk(vw - l[0], l[1] - body.w * 0.5);
+        if (!body.active && el > 4) $('#hint').textContent = TXT.semCorpo;
+      } else if (c.tipo === 'quiz') {
+        // apontar com o dedo para uma das respostas
+        const sr = stage.getBoundingClientRect();
+        let hot = -1;
+        const btns = [...quizEl.querySelectorAll('button')];
+        for (const tip of tips) {
+          const cx = sr.left + (vw - tip[0]) / vw * sr.width, cy = sr.top + tip[1] / vh * sr.height;
+          btns.forEach((b, k) => { const r = b.getBoundingClientRect(); if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) hot = k; });
+        }
+        const d = quizEl.dwell || (quizEl.dwell = { i: -1, t: 0 });
+        if (hot >= 0) { if (d.i === hot) d.t += dt; else { d.i = hot; d.t = 0; } } else { d.i = -1; d.t = 0; }
+        btns.forEach((b, k) => { b.classList.toggle('hot', k === d.i); b.querySelector('.fill').style.transform = `scaleX(${k === d.i ? clamp(d.t / 0.9, 0, 1) : 0})`; });
+        if (d.i >= 0 && d.t > 0.9) { const k = d.i; d.i = -1; answerQuiz(k); }
+      } else if (c.tipo === 'toque' && (f0 || c.corpo)) {
+        const targets = (c.corpo ? bodyTargets({ all: true }) : collectTargets(f0, { all: true, touch: true })).filter(t => t.id === c.alvo && (t.kind === 'part' || t.kind === 'body'));
         const hit = nearestTarget(tips, targets, R * 1.15);
         if (hit) { ch.hold += dt; fxDraw.progress = { x: hit.tip[0], y: hit.tip[1], p: clamp(ch.hold / 0.45, 0, 1) }; }
         else ch.hold = Math.max(0, ch.hold - dt);
@@ -1024,12 +1339,13 @@ function updateInteraction(f0, dt, now) {
         if (el > 7) fxDraw.hintAt = targets;
         if (!tips.length && noHandSince && now - noHandSince > 3500) $('#hint').textContent = TXT.semMao;
       }
-      if (el > 25 && ch.phase === 'ask') {
+      const limit = c.tipo === 'quiz' ? 40 : ch.lvl === 'pequeninos' ? 32 : 25;
+      if (el > limit && ch.phase === 'ask') {
         ch.phase = 'skip'; ch.t = now;
         promptShow('🙂', 'Esta era difícil! Vamos tentar outra.', starsStr(), null);
         speak('Esta era difícil! Vamos tentar outra.');
       }
-    } else if ((ch.phase === 'ok' && el > 3.2) || (ch.phase === 'skip' && el > 2.2)) nextRound();
+    } else if ((ch.phase === 'ok' && el > (ch.list[ch.i]?.tipo === 'quiz' ? 5.5 : 3.2)) || (ch.phase === 'skip' && el > 2.2)) nextRound();
   }
 
   // dica de músculo em acção (modo explorar)
@@ -1106,6 +1422,7 @@ function frame(nowMs) {
     if (!h.rig) h.rig = handRigs[i];
     if (h.active && h.lm) updateHand(h); else h.rig.g.visible = false;
   });
+  updateBody();
   const f0 = primaryFace();
 
   // músculos
@@ -1124,10 +1441,11 @@ function frame(nowMs) {
   drawLabels(f0, st);
   drawTracking();
   drawFx(dt, st, now);
+  recFrame(now);
 
   // dicas
   const hint = $('#hint');
-  if (!f0) { if (!noFaceSince) noFaceSince = now; } else noFaceSince = 0;
+  if (!f0 && !bodyRig?.on) { if (!noFaceSince) noFaceSince = now; } else noFaceSince = 0;
   let msg = '';
   if (noFaceSince && now - noFaceSince > 1500) msg = TXT.semCara;
   else if (f0 && f0.faceW < vw * 0.12) msg = TXT.perto;
@@ -1144,15 +1462,15 @@ function frame(nowMs) {
 }
 
 // ------------------------------------------------------------------ foto
-function takePhoto() {
-  if (!source) return;
-  const c = document.createElement('canvas'); c.width = vw; c.height = vh;
-  const g = c.getContext('2d');
-  const st = revealState(primaryFace());
-  g.save(); g.translate(vw, 0); g.scale(-1, 1);
+// compõe a imagem final (vídeo + anatomia + etiquetas) num canvas vw×vh — usado na foto e na gravação
+let ovCanvas = null;
+function composeFrame(g) {
+  const st = revealState(primaryFace(), true);
+  g.save(); g.setTransform(-1, 0, 0, 1, vw, 0);
   g.drawImage(source, 0, 0, vw, vh);
-  const o = document.createElement('canvas'); o.width = vw; o.height = vh;
-  const og = o.getContext('2d');
+  if (!ovCanvas || ovCanvas.width !== vw || ovCanvas.height !== vh) { ovCanvas = document.createElement('canvas'); ovCanvas.width = vw; ovCanvas.height = vh; }
+  const og = ovCanvas.getContext('2d');
+  og.globalCompositeOperation = 'source-over'; og.clearRect(0, 0, vw, vh);
   const bd = backdropFilter();
   og.filter = bd.f; og.drawImage(source, 0, 0, vw, vh); og.filter = 'none';
   og.fillStyle = bd.tint; og.fillRect(0, 0, vw, vh);
@@ -1163,31 +1481,71 @@ function takePhoto() {
     if (st.mode === 'lens') { grd = og.createRadialGradient(st.c[0], st.c[1], st.r0, st.c[0], st.c[1], st.r); grd.addColorStop(0, '#000'); grd.addColorStop(1, 'rgba(0,0,0,0)'); }
     else { const [nx, ny] = st.n; grd = og.createLinearGradient(st.p[0] - nx * st.fw, st.p[1] - ny * st.fw, st.p[0] + nx * st.fw, st.p[1] + ny * st.fw); grd.addColorStop(0, 'rgba(0,0,0,0)'); grd.addColorStop(1, '#000'); }
     og.fillStyle = grd; og.fillRect(0, 0, vw, vh);
+    og.globalCompositeOperation = 'source-over';
   }
-  g.drawImage(o, 0, 0);
+  g.drawImage(ovCanvas, 0, 0);
   if (S.track) g.drawImage(tCanvas, 0, 0);
   g.restore();
   g.drawImage(lCanvas, 0, 0, vw, vh);
   g.drawImage(fxCanvas, 0, 0, vw, vh);
-  // marca discreta
   g.font = `600 ${Math.round(vh * 0.03)}px Fredoka, sans-serif`; g.fillStyle = 'rgba(111,227,255,0.85)'; g.textBaseline = 'bottom';
   g.fillText('Espelho Raio-X', vh * 0.02, vh * 0.98);
-  const d = new Date(), z = n => String(n).padStart(2, '0');
-  const name = `espelho-raio-x-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.png`;
-  const fl = $('#flash'); fl.classList.add('on'); setTimeout(() => fl.classList.remove('on'), 60);
-  tone([1400, 700], 0.04, 'square', 0.05);
+}
+const stamp = ext => { const d = new Date(), z = n => String(n).padStart(2, '0'); return `espelho-raio-x-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.${ext}`; };
+function saveBlob(blob, name, okMsg) {
   if (ARTIFACT) {
-    if (!capDownloads) { toast('Aqui não dá para guardar fotos 🙁'); return; }
-    c.toBlob(b => capDownloads.save({ filename: name, data: b })
-      .then(() => toast('📸 Foto guardada!'))
-      .catch(e => { if (e?.code !== 'declined') toast('Não consegui guardar a foto.'); }), 'image/png');
+    if (!capDownloads) { toast('Aqui não dá para guardar ficheiros 🙁'); return; }
+    capDownloads.save({ filename: name, data: blob }).then(() => toast(okMsg)).catch(e => { if (e?.code !== 'declined') toast('Não consegui guardar o ficheiro.'); });
     return;
   }
-  const a = document.createElement('a');
-  a.download = name; a.href = c.toDataURL('image/png'); a.click();
-  toast('📸 Foto guardada nas Transferências!');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.download = name; a.href = url; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  toast(okMsg + ' (Transferências)');
 }
-
+function takePhoto() {
+  if (!source) return;
+  const c = document.createElement('canvas'); c.width = vw; c.height = vh;
+  composeFrame(c.getContext('2d'));
+  const fl = $('#flash'); fl.classList.add('on'); setTimeout(() => fl.classList.remove('on'), 60);
+  tone([1400, 700], 0.04, 'square', 0.05);
+  c.toBlob(b => saveBlob(b, stamp('png'), '📸 Foto guardada!'), 'image/png');
+}
+// ------------------------------------------------------------------ gravar vídeo
+const REC_MAX = 20;
+let rec = null;
+function toggleRec() { if (rec) stopRec(); else startRec(); }
+function startRec() {
+  if (!source || rec || typeof MediaRecorder === 'undefined') { if (typeof MediaRecorder === 'undefined') toast('Este browser não consegue gravar vídeo.'); return; }
+  const c = document.createElement('canvas'); c.width = vw; c.height = vh;
+  const g = c.getContext('2d');
+  composeFrame(g);
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+  let mr;
+  try { mr = new MediaRecorder(c.captureStream(30), mime ? { mimeType: mime, videoBitsPerSecond: 5e6 } : undefined); }
+  catch (e) { console.error(e); toast('Não consegui começar a gravar.'); return; }
+  const chunks = [];
+  mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  mr.onstop = () => { if (chunks.length) saveBlob(new Blob(chunks, { type: 'video/webm' }), stamp('webm'), '🎬 Vídeo guardado!'); };
+  mr.start(500);
+  rec = { mr, c, g, t0: performance.now() };
+  $('#btnRec').classList.add('rec'); $('#btnRec').textContent = '⏹'; $('#recBadge').hidden = false;
+  tone([660, 990], 0.06);
+}
+function stopRec() {
+  if (!rec) return;
+  try { rec.mr.stop(); } catch (e) { }
+  rec = null;
+  $('#btnRec').classList.remove('rec'); $('#btnRec').textContent = '🎬'; $('#recBadge').hidden = true;
+  tone([990, 660], 0.06);
+}
+function recFrame(now) {
+  if (!rec) return;
+  composeFrame(rec.g);
+  const el = (now - rec.t0) / 1000;
+  $('#recBadge span').textContent = `0:${String(Math.floor(el)).padStart(2, '0')} / 0:${REC_MAX}`;
+  if (el >= REC_MAX) stopRec();
+}
 // ------------------------------------------------------------------ interface
 function refreshUI() {
   $$('[data-set]').forEach(el => {
@@ -1203,12 +1561,16 @@ function refreshUI() {
   saveSettings();
   requestAnimationFrame(layout);
 }
+function bodyNudge() {
+  if (!S.layers.body) return;
+  setTimeout(() => { if (S.layers.body && running && !bodyRig?.on) toast(TXT.semCorpo, 3500); }, 5000);
+}
 function initUI() {
   if (window.innerWidth < 900) S.panel = false;
   const chips = $('#layerChips');
   chips.innerHTML = Object.entries(LAYERS).map(([k, l]) => `<button class="chip" data-layer="${k}" style="--c:${l.cor}"><i></i>${l.nome}</button>`).join('');
-  chips.onclick = e => { const b = e.target.closest('.chip'); if (!b) return; S.layers[b.dataset.layer] = !S.layers[b.dataset.layer]; refreshUI(); };
-  $$('[data-preset]').forEach(b => b.onclick = () => { S.layers = { ...PRESETS[b.dataset.preset] }; refreshUI(); sndTick(); });
+  chips.onclick = e => { const b = e.target.closest('.chip'); if (!b) return; S.layers[b.dataset.layer] = !S.layers[b.dataset.layer]; refreshUI(); if (b.dataset.layer === 'body') bodyNudge(); };
+  $$('[data-preset]').forEach(b => b.onclick = () => { S.layers = { ...PRESETS[b.dataset.preset] }; refreshUI(); sndTick(); bodyNudge(); });
   $$('.seg[data-set]').forEach(seg => seg.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     setPath(S, seg.dataset.set, b.dataset.val);
@@ -1216,10 +1578,11 @@ function initUI() {
     refreshUI();
   });
   $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); });
-  $$('[data-fit]').forEach(b => b.onclick = () => { S.fit = { ...FIT_PRESETS[b.dataset.fit] }; refreshUI(); });
+  $$('[data-fit]').forEach(b => b.onclick = () => { S.fit = { ...FIT_PRESETS[b.dataset.fit] }; S.babyTeeth = b.dataset.fit === 'crianca'; refreshUI(); });
   $('#btnFitReset').onclick = () => { S.fit = { ...FIT_PRESETS.adulto }; refreshUI(); };
   $$('.modes button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
   $('#btnFoto').onclick = takePhoto;
+  $('#btnRec').onclick = toggleRec;
   $('#btnVoz').onclick = () => { S.voice = !S.voice; if (!S.voice) stopSpeech(); refreshUI(); };
   $('#btnFile').onclick = () => $('#fileIn').click();
   $('#btnPainel').onclick = () => { S.panel = !S.panel; refreshUI(); };
@@ -1227,22 +1590,23 @@ function initUI() {
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT') return;
     if (e.key === 'f' || e.key === 'F') takePhoto();
+    else if (e.key === 'v' || e.key === 'V') toggleRec();
     else if (e.key === 'p' || e.key === 'P') { S.panel = !S.panel; refreshUI(); }
     else if (e.key === 'l' || e.key === 'L') { S.labels = !S.labels; refreshUI(); }
     else if (e.key === 'Escape') { $('#card').hidden = true; selected = null; }
-    else if ('1234'.includes(e.key)) { S.layers = { ...PRESETS[['ossos', 'cerebro', 'musculos', 'tudo'][+e.key - 1]] }; refreshUI(); }
+    else if ('12345'.includes(e.key) && e.key) { S.layers = { ...PRESETS[['ossos', 'corpo', 'cerebro', 'musculos', 'tudo'][+e.key - 1]] }; refreshUI(); }
   });
   const toVid = e => { const r = stage.getBoundingClientRect(); const xd = (e.clientX - r.left) / r.width * vw; return [vw - xd, (e.clientY - r.top) / r.height * vh]; };
   stage.addEventListener('pointermove', e => { pointer = toVid(e); });
   stage.addEventListener('pointerleave', () => { pointer = null; });
   stage.addEventListener('click', e => {
-    if (e.target.closest('#card, #prompt')) return;
-    const f0 = primaryFace(); if (!f0) return;
+    if (e.target.closest('#card, #prompt, #quiz')) return;
+    const f0 = primaryFace(); if (!f0 && !bodyRig?.on) return;
     const [x, y] = toVid(e);
     // clique num rótulo
     const xd = vw - x;
     for (const t of lastLabels) if (t.box && xd >= t.box[0] && xd <= t.box[0] + t.box[2] && y >= t.box[1] && y <= t.box[1] + t.box[3]) { showCard(t); return; }
-    const hit = nearestTarget([[x, y]], [...collectTargets(f0, { touch: true }), ...handTargets()], f0.faceW * 0.16);
+    const hit = nearestTarget([[x, y]], [...collectTargets(f0, { touch: true }), ...handTargets(), ...bodyTargets()], f0 ? f0.faceW * 0.16 : body.w * 0.12);
     if (hit) showCard(hit.t);
   });
   refreshUI();
@@ -1257,6 +1621,7 @@ async function boot() {
     loadMsg.textContent = 'A preparar o laboratório… a montar o esqueleto';
     await loadAnatomy();
     headRigs = [makeHeadRig(), makeHeadRig()];
+    bodyRig = makeBodyRig();
     handRigs = [makeHandRig(), makeHandRig()];
     applyLook();
     await loadVision(m => (loadMsg.textContent = m));
@@ -1321,7 +1686,7 @@ if (ARTIFACT) {
   $('#artNote').hidden = false; $('#altLabel').hidden = true;
   $('#btnCamAlt').hidden = false; $('#btnCamAlt').onclick = startCamera;
   $('#privacy').textContent = '🔒 A foto ou o vídeo ficam só neste browser — nada é enviado para lado nenhum.';
-  $('#btnFoto').hidden = true;
+  $('#btnFoto').hidden = true; $('#btnRec').hidden = true;
 }
 // arrastar e largar uma foto ou vídeo
 let dragN = 0;
@@ -1336,4 +1701,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { S, faces, hands, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o) };
+window.espelho = { S, faces, hands, body, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, toggleRec };

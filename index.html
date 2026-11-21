@@ -24,6 +24,7 @@
     <div class="actions">
       <button id="btnFile" class="icon" title="Abrir uma foto ou vídeo" aria-label="Abrir uma foto ou vídeo">📁</button>
       <button id="btnFoto" class="icon" title="Tirar foto (F)" aria-label="Tirar foto">📸</button>
+      <button id="btnRec" class="icon" title="Gravar vídeo (V)" aria-label="Gravar vídeo">🎬</button>
       <button id="btnVoz" class="icon" title="Voz ligada/desligada" aria-label="Voz" aria-pressed="true">🔊</button>
       <button id="btnFull" class="icon" title="Ecrã inteiro" aria-label="Ecrã inteiro">⛶</button>
       <button id="btnPainel" class="icon" title="Mostrar/esconder painel (P)" aria-label="Painel" aria-pressed="true">⚙️</button>
@@ -50,7 +51,11 @@
           <div class="p-emoji"></div>
           <div class="p-body"><div class="p-text"></div><div class="p-stars"></div></div>
           <button class="p-btn" hidden></button>
+          <div class="p-opts" hidden></div>
         </div>
+
+        <div id="quiz" hidden></div>
+        <div id="recBadge" hidden><i></i><span>0:00</span></div>
 
         <div id="card" hidden>
           <button class="c-close" aria-label="Fechar">×</button>
@@ -93,6 +98,7 @@
         <h3>O que queres ver?</h3>
         <div class="presets">
           <button data-preset="ossos"><span>💀</span>Ossos</button>
+          <button data-preset="corpo"><span>🩻</span>Corpo</button>
           <button data-preset="cerebro"><span>🧠</span>Cérebro</button>
           <button data-preset="musculos"><span>💪</span>Músculos</button>
           <button data-preset="tudo"><span>✨</span>Tudo</button>
@@ -133,6 +139,7 @@
         <label class="row">Esquerda / direita <input type="range" min="-3" max="3" step="0.05" data-set="fit.x"></label>
         <label class="row">Cima / baixo <input type="range" min="-3" max="3" step="0.05" data-set="fit.y"></label>
         <label class="row">Frente / trás <input type="range" min="-3" max="3" step="0.05" data-set="fit.z"></label>
+        <label class="row check"><input type="checkbox" data-set="babyTeeth"> Dentes de leite (com os definitivos a crescer por baixo)</label>
         <button id="btnFitReset" class="ghost">Repor</button>
         <p class="tip">Dica: escolhe o aspecto <b>Osso</b>, põe “Ver a minha cara” a meio e acerta o crânio com a tua cara.</p>
       </details>
