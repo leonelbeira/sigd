@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; connect-src 'self' blob: data: https://cdn.jsdelivr.net https://storage.googleapis.com; img-src 'self' blob: data:; media-src 'self' blob: mediastream:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Espelho Raio-X</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 48 48%22%3E%3Crect width=%2248%22 height=%2248%22 rx=%2212%22 fill=%22%2307101f%22/%3E%3Ccircle cx=%2224%22 cy=%2221%22 r=%2213%22 fill=%22none%22 stroke=%22%236fe3ff%22 stroke-width=%223.5%22/%3E%3Ccircle cx=%2219%22 cy=%2221%22 r=%223.6%22 fill=%22%236fe3ff%22/%3E%3Ccircle cx=%2229%22 cy=%2221%22 r=%223.6%22 fill=%22%236fe3ff%22/%3E%3Cpath d=%22M17 34h14v6H17z%22 fill=%22%236fe3ff%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@300..700&display=swap">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="20" r="15" fill="none" stroke="currentColor" stroke-width="3"/><ellipse cx="18" cy="20" rx="4" ry="4.6" fill="currentColor"/><ellipse cx="30" cy="20" rx="4" ry="4.6" fill="currentColor"/><path d="M24 25l-2.4 4h4.8z" fill="currentColor"/><path d="M15 33h18v6a3 3 0 0 1-3 3H18a3 3 0 0 1-3-3z" fill="none" stroke="currentColor" stroke-width="3"/><path d="M21 33v9M27 33v9" stroke="currentColor" stroke-width="2.2"/></svg>
+      <h1>Espelho <b>Raio-X</b></h1>
+    </div>
+    <nav class="modes" aria-label="Modo">
+      <button data-mode="explorar" class="on"><span>🔍</span> Explorar</button>
+      <button data-mode="tocar"><span>👆</span> Toca e descobre</button>
+      <button data-mode="desafio"><span>⭐</span> Desafio</button>
+    </nav>
+    <div class="actions">
+      <button id="btnFile" class="icon" title="Abrir uma foto ou vídeo" aria-label="Abrir uma foto ou vídeo">📁</button>
+      <button id="btnFoto" class="icon" title="Tirar foto (F)" aria-label="Tirar foto">📸</button>
+      <button id="btnVoz" class="icon" title="Voz ligada/desligada" aria-label="Voz" aria-pressed="true">🔊</button>
+      <button id="btnFull" class="icon" title="Ecrã inteiro" aria-label="Ecrã inteiro">⛶</button>
+      <button id="btnPainel" class="icon" title="Mostrar/esconder painel (P)" aria-label="Painel" aria-pressed="true">⚙️</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="stageWrap">
+      <div id="stage">
+        <div id="mirror">
+          <video id="video" playsinline muted></video>
+          <img id="still" alt="" hidden>
+          <div id="anat">
+            <canvas id="gl"></canvas>
+            <canvas id="muscles"></canvas>
+          </div>
+          <canvas id="track"></canvas>
+        </div>
+        <canvas id="labels"></canvas>
+        <canvas id="fx"></canvas>
+        <div id="flash"></div>
+
+        <div id="prompt" hidden>
+          <div class="p-emoji"></div>
+          <div class="p-body"><div class="p-text"></div><div class="p-stars"></div></div>
+          <button class="p-btn" hidden></button>
+        </div>
+
+        <div id="card" hidden>
+          <button class="c-close" aria-label="Fechar">×</button>
+          <div class="c-head"><span class="c-emoji"></span><div><h2 class="c-title"></h2><div class="c-sci"></div></div></div>
+          <p class="c-text"></p>
+          <button class="c-say">🔊 Ouvir outra vez</button>
+        </div>
+
+        <div id="toast" hidden></div>
+        <div id="hint" hidden></div>
+        <div id="stats" hidden></div>
+      </div>
+
+      <div id="start">
+        <div class="s-box">
+          <svg class="s-skull" viewBox="0 0 120 130" aria-hidden="true">
+            <defs><radialGradient id="sg" cx="50%" cy="40%" r="60%"><stop offset="0" stop-color="#e9fbff"/><stop offset="1" stop-color="#6fdcff"/></radialGradient></defs>
+            <path d="M60 6C32 6 12 26 12 54c0 16 7 27 17 33v14c0 5 4 9 9 9h44c5 0 9-4 9-9V87c10-6 17-17 17-33C108 26 88 6 60 6z" fill="none" stroke="url(#sg)" stroke-width="5"/>
+            <ellipse cx="41" cy="58" rx="12" ry="13" fill="#6fdcff" opacity=".85"/><ellipse cx="79" cy="58" rx="12" ry="13" fill="#6fdcff" opacity=".85"/>
+            <path d="M60 72l-7 12h14z" fill="#6fdcff"/>
+            <path d="M44 96v14M52 96v14M60 96v14M68 96v14M76 96v14" stroke="#e9fbff" stroke-width="4" stroke-linecap="round"/>
+          </svg>
+          <h2>Vê o que tens <em>por dentro</em>!</h2>
+          <p>A câmara mostra-te como um espelho e desenha por cima os teus ossos, o cérebro e os músculos — e eles mexem-se contigo.</p>
+          <p id="artNote" class="art-note" hidden>Aqui dentro do Claude o browser não deixa usar a câmara. Grava um vídeo curto com o telemóvel ou a webcam — a fazer caretas, a abrir a boca e a mostrar as mãos — e abre-o aqui. Para o espelho ao vivo, usa a versão para computador.</p>
+          <button id="btnStart" class="big">🎥 Ligar a câmara</button>
+          <button id="btnCamAlt" class="alt linkbtn" hidden>ou tenta ligar a câmara</button>
+          <label class="alt" id="altLabel">ou experimenta com uma foto ou vídeo
+            <input id="fileIn" type="file" accept="image/*,video/*">
+          </label>
+          <div id="loadMsg" class="load">A preparar o laboratório…</div>
+          <p class="privacy" id="privacy">🔒 Tudo acontece neste computador. O vídeo nunca é gravado nem enviado para lado nenhum.</p>
+          <p class="privacy">Também podes arrastar uma foto ou um vídeo para esta janela.</p>
+        </div>
+      </div>
+    </section>
+
+    <aside id="panel" aria-label="Definições">
+      <section>
+        <h3>O que queres ver?</h3>
+        <div class="presets">
+          <button data-preset="ossos"><span>💀</span>Ossos</button>
+          <button data-preset="cerebro"><span>🧠</span>Cérebro</button>
+          <button data-preset="musculos"><span>💪</span>Músculos</button>
+          <button data-preset="tudo"><span>✨</span>Tudo</button>
+        </div>
+        <div class="chips" id="layerChips"></div>
+        <label class="row check"><input type="checkbox" data-set="labels"> Mostrar os nomes</label>
+      </section>
+
+      <section>
+        <h3>Aspecto</h3>
+        <div class="seg" data-set="look">
+          <button data-val="xray">Raio-X</button><button data-val="solid">Osso</button><button data-val="neon">Néon</button>
+        </div>
+        <label class="row">Brilho <input type="range" min="0.3" max="2" step="0.05" data-set="bright"></label>
+        <label class="row">Ver a minha cara <input type="range" min="0" max="1" step="0.01" data-set="realMe"></label>
+        <label class="row">Anatomia por cima <input type="range" min="0.15" max="1" step="0.01" data-set="anat"></label>
+      </section>
+
+      <section>
+        <h3>Revelar</h3>
+        <div class="seg" data-set="reveal">
+          <button data-val="all">Tudo</button><button data-val="lens">Lupa mágica</button><button data-val="half">Meia cara</button>
+        </div>
+        <label class="row">Tamanho da lupa <input type="range" min="0.1" max="0.6" step="0.01" data-set="lens"></label>
+        <label class="row">Bordas suaves <input type="range" min="0" max="0.6" step="0.01" data-set="feather"></label>
+        <p class="tip">A lupa segue o teu dedo indicador. Sem mão à vista, segue o rato.</p>
+      </section>
+
+      <details>
+        <summary>Ajustar à minha cabeça</summary>
+        <div class="seg small" id="fitPresets">
+          <button data-fit="adulto">Adulto</button><button data-fit="crianca">Criança</button>
+        </div>
+        <label class="row">Tamanho <input type="range" min="0.7" max="1.4" step="0.01" data-set="fit.size"></label>
+        <label class="row">Largura <input type="range" min="0.8" max="1.25" step="0.01" data-set="fit.w"></label>
+        <label class="row">Altura <input type="range" min="0.8" max="1.25" step="0.01" data-set="fit.h"></label>
+        <label class="row">Profundidade <input type="range" min="0.8" max="1.25" step="0.01" data-set="fit.d"></label>
+        <label class="row">Esquerda / direita <input type="range" min="-3" max="3" step="0.05" data-set="fit.x"></label>
+        <label class="row">Cima / baixo <input type="range" min="-3" max="3" step="0.05" data-set="fit.y"></label>
+        <label class="row">Frente / trás <input type="range" min="-3" max="3" step="0.05" data-set="fit.z"></label>
+        <button id="btnFitReset" class="ghost">Repor</button>
+        <p class="tip">Dica: escolhe o aspecto <b>Osso</b>, põe “Ver a minha cara” a meio e acerta o crânio com a tua cara.</p>
+      </details>
+
+      <details>
+        <summary>Para os mais crescidos</summary>
+        <label class="row check"><input type="checkbox" data-set="sci"> Nomes científicos</label>
+        <label class="row check"><input type="checkbox" data-set="track"> Mostrar os pontos do tracking</label>
+        <label class="row check"><input type="checkbox" data-set="muscleHint"> Avisar que músculo estou a usar</label>
+      </details>
+
+      <p class="note">A anatomia é um modelo 3D ilustrativo de um adulto, ajustado e preso à tua cabeça. Mostra onde as coisas costumam estar — não é um raio-X verdadeiro de ti, nem um instrumento médico. O vídeo é processado só neste computador e nunca é enviado.</p>
+    </aside>
+  </main>
+</div>
+
+<div id="fileWarn" hidden>
+  <div class="s-box">
+    <h2>Quase lá!</h2>
+    <p>Abriste o ficheiro directamente, e assim o browser não deixa usar a câmara nem carregar os modelos.</p>
+    <p>No Windows, faz duplo clique em <b>Iniciar Espelho Raio-X.bat</b> (está na mesma pasta). No Mac ou Linux, corre <b>iniciar.sh</b>.</p>
+  </div>
+</div>
+<script src="js/filecheck.js"></script>
+<script src="js/config.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
