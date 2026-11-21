@@ -1,9 +1,9 @@
 // Espelho Raio-X — app principal
 // Câmara -> MediaPipe (cara 478 pontos + mãos 21 pontos) -> anatomia 3D (Three.js) + músculos 2D + etiquetas.
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
-import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
+import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker, ObjectDetector } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
 import { CANON, MIRROR } from './canon.js';
-import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, LEVELS, BODY_CHALLENGES, QUIZ } from './parts.js';
+import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, LEVELS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural } from './parts.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -24,12 +24,14 @@ const CFG = Object.assign({
   faceModel: 'models/face_landmarker.task',
   handModel: 'models/hand_landmarker.task',
   poseModel: 'models/pose_landmarker_lite.task',
+  objModel: 'models/efficientdet_lite0.tflite',
 }, window.ESPELHO_CFG || {});
 // impressões digitais (SHA-256) dos modelos testados (iguais aos da pasta models/): só usamos ficheiros iguais a estes
 const MODEL_SHA = {
   face: '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff',
   hand: 'fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1',
   pose: '59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a',
+  obj: '4b59100025bea1235a84c1038879a6cccc9f6c49f5e41144e91e74d99e780993',
 };
 async function loadModel(url, sha) {
   const r = await fetch(url);
@@ -46,6 +48,7 @@ async function loadModel(url, sha) {
 const DEFAULTS = {
   layers: { skull: true, teeth: true, spine: true, brain: false, eyes: true, muscles: false, hands: true, body: false },
   babyTeeth: false, level: 'exploradores',
+  objXray: true, objEN: false, objMov: false,
   labels: true, look: 'xray', bright: 1, realMe: 0.45, anat: 1,
   reveal: 'all', lens: 0.26, feather: 0.25,
   fit: { size: 1, w: 1, h: 1, d: 1, x: 0, y: 0, z: 0 },
@@ -610,6 +613,13 @@ function detect(now) {
     for (const h of hands) if (h.active && h.lost > 8) h.active = false;
   } else if (!doHands) hands.forEach(h => (h.active = false));
 
+  // objectos
+  if (mode === 'objectos') {
+    ensureObj();
+    if (DEBUG.objs) updateObjects(DEBUG.objs.map(([cls, x, y, w, h, sc = 0.8]) => ({ categories: [{ categoryName: cls, score: sc }], boundingBox: { originX: x, originY: y, width: w, height: h } })), t);
+    else if (objLM && now - objLast > 120) { objLast = now; const d = objLM.detectForVideo(source, ts).detections || []; objRaw = d.map(x => x.categories[0].categoryName + ':' + x.categories[0].score.toFixed(2)); updateObjects(d, t); }
+  } else if (objTracks.length) objTracks.length = 0;
+
   // corpo
   const needPose = S.layers.body || (mode === 'desafio' && ch && ch.list[ch.i]?.corpo);
   if (needPose) ensurePose();
@@ -1026,7 +1036,7 @@ function drawLabels(f, st) {
   const ctx = lctx;
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, lCanvas.width, lCanvas.height);
   const bOn = bodyRig?.on && S.layers.body;
-  if (!S.labels || (!f && !bOn)) return;
+  if (!S.labels || (!f && !bOn) || mode === 'objectos') return;
   const sc = lCanvas.width / vw; ctx.setTransform(sc, 0, 0, sc, 0, 0);
   let T = [...collectTargets(f), ...handTargets(), ...bodyTargets()].filter(t => !t.extra);
   // um rótulo por parte: o lado mais virado para a câmara
@@ -1159,7 +1169,7 @@ let ch = null;
 function setMode(m) {
   mode = m;
   $$('.modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
-  $('#prompt').hidden = true; ch = null; dwell.id = null; hideQuiz();
+  $('#prompt').hidden = true; ch = null; hunt = null; dwell.id = null; hideQuiz();
   $('#card').hidden = true; selected = null;
   if (m === 'tocar') {
     S.layers.hands = true; refreshUI();
@@ -1167,6 +1177,7 @@ function setMode(m) {
     speak(TXT.tocaIntro);
     setTimeout(() => { if (mode === 'tocar' && !ch) $('#prompt').hidden = true; }, 5000);
   }
+  if (m === 'objectos') { objIntro(); setTimeout(() => { if (mode === 'objectos' && !hunt) promptShow('📦', 'Mostra um objecto!', '', null, null, '', [{ html: '<b>🎯</b>Caça ao tesouro', on: startHunt }]); }, 9000); }
   if (m === 'desafio') {
     S.layers.skull = true; S.layers.hands = true; refreshUI();
     if (sourceKind === 'image') {
@@ -1401,6 +1412,335 @@ function drawFx(dt, st, now) {
   }
 }
 
+
+// ================================================================== MODO OBJECTOS
+let objLM = null, objLoading = null, objLast = 0, objRaw = [];
+const objTracks = []; let objNextId = 1;
+const objSaid = {}; let objLastSay = 0, objNoneSince = 0;
+function ensureObj() {
+  if (objLM || objLoading || !fileset) return;
+  objLoading = (async () => {
+    toast('📦 A preparar o detector de objectos…', 2200);
+    const buf = await loadModel(CFG.objModel, CFG.checkSha === false ? null : MODEL_SHA.obj);
+    objLM = await mkTask(ObjectDetector, { baseOptions: { modelAssetBuffer: buf }, runningMode: 'VIDEO', maxResults: 8, scoreThreshold: 0.4 });
+  })().catch(e => { console.error(e); toast('Não consegui carregar o detector de objectos.'); objLoading = null; });
+}
+function iou(a, b) {
+  const x0 = Math.max(a[0], b[0]), y0 = Math.max(a[1], b[1]), x1 = Math.min(a[0] + a[2], b[0] + b[2]), y1 = Math.min(a[1] + a[3], b[1] + b[3]);
+  const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+  return i / (a[2] * a[3] + b[2] * b[3] - i || 1);
+}
+function updateObjects(dets, t) {
+  const list = dets.map(d => ({ cls: d.categories[0].categoryName, score: d.categories[0].score, b: [d.boundingBox.originX, d.boundingBox.originY, d.boundingBox.width, d.boundingBox.height] }))
+    .filter(d => OBJECTS[d.cls] && d.cls !== 'person' && (S.objMov || !OBJECTS[d.cls].mov));
+  for (const tr of objTracks) tr.matched = false;
+  for (const d of list) {
+    let best = null, bi = 0.2;
+    for (const tr of objTracks) if (!tr.matched && tr.cls === d.cls) { const v = iou(tr.b, d.b); if (v > bi) { bi = v; best = tr; } }
+    if (best) { best.b = best.b.map((v, i) => lerp(v, d.b[i], 0.55)); best.score = lerp(best.score, d.score, 0.4); best.last = t; best.matched = true; best.hits++; }
+    else objTracks.push({ id: objNextId++, cls: d.cls, b: d.b.slice(), score: d.score, first: t, last: t, hits: 1, matched: true });
+  }
+  for (let i = objTracks.length - 1; i >= 0; i--) if (t - objTracks[i].last > 1.0) objTracks.splice(i, 1);
+}
+const stableObjs = t => objTracks.filter(tr => tr.hits >= 3 && t - tr.first > 0.35);
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const joinPT = a => a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' e ' + a[a.length - 1];
+function objItem(cls) {
+  const o = OBJECTS[cls];
+  return { nome: cap(o.n), cient: `Em inglês: ${o.en}`, emoji: o.e, facto: o.f || 'Que mais consegues encontrar? Mostra-me outra coisa!' };
+}
+function objSummaryText(objs) {
+  const cnt = {};
+  for (const tr of objs) cnt[tr.cls] = (cnt[tr.cls] || 0) + 1;
+  return joinPT(Object.entries(cnt).map(([c, n]) => `${n} ${n > 1 ? objPlural(OBJECTS[c]) : OBJECTS[c].n}`));
+}
+
+// ---------- raio-X dos objectos (desenhos ilustrativos dentro da caixa do objecto)
+function objStyle(ctx, t, i, k) {
+  const op = S.anat;
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(1.5, k * 0.014);
+  if (S.look === 'solid') {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = `rgba(250,240,220,${0.95 * op})`; ctx.fillStyle = `rgba(245,232,205,${0.35 * op})`; ctx.shadowBlur = 0;
+  } else {
+    ctx.globalCompositeOperation = 'lighter';
+    const col = S.look === 'neon' ? `hsla(${(t * 60 + i * 70) % 360},100%,70%,` : 'rgba(190,240,255,';
+    ctx.strokeStyle = col + (0.85 * op * Math.min(1.3, S.bright)) + ')'; ctx.fillStyle = col + (0.1 * op) + ')';
+    ctx.shadowColor = S.look === 'neon' ? ctx.strokeStyle : '#6fe3ff'; ctx.shadowBlur = objTracks.length <= 3 ? k * 0.04 : 0; // brilho só com poucos objectos (é pesado)
+  }
+}
+const XR = {};
+function drawObjXray(tr, t) {
+  const o = OBJECTS[tr.cls]; if (!o.x || !XR[o.x]) return;
+  const [bx, by, bw, bh] = tr.b, k = Math.min(bw, bh);
+  const ctx = mctx; ctx.save();
+  objStyle(ctx, t, tr.id, k);
+  const fade = clamp((t - tr.first) / 0.5, 0, 1); ctx.globalAlpha = fade;
+  // primitivas em coordenadas da caixa (u, v de 0 a 1)
+  const g = {
+    t, k, bw, bh, cls: tr.cls, wide: bw > bh,
+    P: (u, v) => [bx + u * bw, by + v * bh],
+    line(pts, close = false, fill = false) { ctx.beginPath(); pts.forEach(([u, v], i) => { const x = bx + u * bw, y = by + v * bh; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); if (close) ctx.closePath(); if (fill) ctx.fill(); ctx.stroke(); },
+    ell(u, v, ru, rv, fill = false, rot = 0) { ctx.beginPath(); ctx.ellipse(bx + u * bw, by + v * bh, Math.max(0.5, ru * bw), Math.max(0.5, rv * bh), rot, 0, Math.PI * 2); if (fill) ctx.fill(); ctx.stroke(); },
+    circ(u, v, r, fill = false) { ctx.beginPath(); ctx.arc(bx + u * bw, by + v * bh, Math.max(0.5, r * k), 0, Math.PI * 2); if (fill) ctx.fill(); ctx.stroke(); },
+    dot(u, v, r) { ctx.beginPath(); ctx.arc(bx + u * bw, by + v * bh, Math.max(0.8, r * k), 0, Math.PI * 2); ctx.fill(); ctx.stroke(); },
+    rect(u, v, w, h, fill = false) { ctx.beginPath(); ctx.rect(bx + u * bw, by + v * bh, w * bw, h * bh); if (fill) ctx.fill(); ctx.stroke(); },
+    dash(on) { ctx.setLineDash(on ? [k * 0.03, k * 0.025] : []); },
+    thin(f = 0.5) { ctx.lineWidth = Math.max(1, k * 0.014 * f); },
+    curve(fn, n = 24, from = 0, to = 1) { const pts = []; for (let i = 0; i <= n; i++) pts.push(fn(from + (to - from) * i / n)); this.line(pts); },
+  };
+  try { XR[o.x](g); } catch (e) { console.warn(e); }
+  ctx.restore();
+}
+XR.banana = g => {
+  const sw = (u, v) => g.wide ? [u, v] : [v, u];
+  const c = s => [0.06 + 0.88 * s, 0.74 - 0.42 * Math.sin(Math.PI * s)];
+  const th = s => 0.2 * Math.pow(Math.sin(Math.PI * s), 0.6) + 0.02;
+  const nrm = s => { const a = c(Math.max(0, s - 0.01)), b = c(Math.min(1, s + 0.01)); const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
+  const side = (f) => Array.from({ length: 31 }, (_, i) => { const s = i / 30, p = c(s), n = nrm(s); return sw(p[0] + n[0] * th(s) * f, p[1] + n[1] * th(s) * f); });
+  g.line([...side(1), ...side(-1).reverse()], true, true);
+  g.thin(0.6); g.dash(true); g.line(side(0.45)); g.line(side(-0.45)); g.dash(false);
+  for (let s = 0.18; s <= 0.82; s += 0.045) { const p = c(s); g.dot(...sw(p[0], p[1]), 0.008); }
+  g.thin(1.2); const a = c(0); g.line([sw(a[0], a[1]), sw(a[0] - 0.04, a[1] - 0.05)]);
+};
+XR.apple = g => {
+  g.line([[0.5, 0.2], [0.3, 0.12], [0.1, 0.3], [0.08, 0.6], [0.25, 0.9], [0.5, 0.95], [0.75, 0.9], [0.92, 0.6], [0.9, 0.3], [0.7, 0.12], [0.5, 0.2]], true, true);
+  g.thin(0.7); g.ell(0.5, 0.55, 0.14, 0.27);
+  for (let i = 0; i < 5; i++) { const a = -Math.PI / 2 + i * 2 * Math.PI / 5; g.ell(0.5 + Math.cos(a) * 0.08, 0.55 + Math.sin(a) * 0.09, 0.025, 0.04, true, a + Math.PI / 2); }
+  g.thin(1.2); g.line([[0.5, 0.2], [0.53, 0.04]]); g.thin(0.7); g.ell(0.62, 0.08, 0.08, 0.035, true, -0.4);
+};
+XR.orange = g => {
+  g.ell(0.5, 0.5, 0.46, 0.46, true); g.thin(0.7); g.ell(0.5, 0.5, 0.4, 0.4);
+  for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5 + g.t * 0.1; g.line([[0.5 + Math.cos(a) * 0.06, 0.5 + Math.sin(a) * 0.06], [0.5 + Math.cos(a) * 0.4, 0.5 + Math.sin(a) * 0.4]]); }
+  g.ell(0.5, 0.5, 0.06, 0.06, true);
+  [[0.62, 0.38], [0.36, 0.6], [0.6, 0.66]].forEach(([u, v]) => g.ell(u, v, 0.02, 0.035, true, 0.6));
+};
+XR.carrot = g => {
+  const sw = (u, v) => g.wide ? [v, 1 - u] : [u, v];
+  g.line([sw(0.25, 0.2), sw(0.75, 0.2), sw(0.52, 0.98), sw(0.48, 0.98)].map(p => p), true, true);
+  g.thin(0.6); g.line([sw(0.5, 0.22), sw(0.5, 0.95)]);
+  for (let v = 0.32; v < 0.9; v += 0.1) { const w = 0.25 * (1 - (v - 0.2) / 0.78); g.line([sw(0.5 - w, v), sw(0.5 - w * 0.4, v + 0.02)]); g.line([sw(0.5 + w * 0.4, v + 0.04), sw(0.5 + w, v + 0.02)]); }
+  g.thin(1); for (const du of [-0.08, 0, 0.08]) g.line([sw(0.5, 0.2), sw(0.5 + du * 2, 0.02)]);
+};
+XR.broccoli = g => {
+  g.line([[0.42, 1], [0.45, 0.6], [0.55, 0.6], [0.58, 1]], false, true);
+  g.thin(0.8); for (const [u, v] of [[0.25, 0.35], [0.4, 0.25], [0.6, 0.25], [0.75, 0.35], [0.5, 0.2]]) g.line([[0.5, 0.62], [u, v]]);
+  for (const [u, v, r] of [[0.25, 0.32, 0.12], [0.42, 0.2, 0.14], [0.6, 0.2, 0.14], [0.76, 0.33, 0.12], [0.5, 0.36, 0.12]]) { g.circ(u, v, r, true); g.dot(u, v, 0.012); }
+};
+XR.ball = g => {
+  g.ell(0.5, 0.5, 0.47, 0.47, true); g.dash(true); g.ell(0.5, 0.5, 0.38, 0.38); g.dash(false);
+  g.thin(0.8); const pent = Array.from({ length: 5 }, (_, i) => { const a = -Math.PI / 2 + i * 2 * Math.PI / 5 + g.t * 0.3; return [0.5 + Math.cos(a) * 0.14, 0.5 + Math.sin(a) * 0.14]; });
+  g.line(pent, true); pent.forEach(([u, v]) => g.line([[u, v], [0.5 + (u - 0.5) * 2.6, 0.5 + (v - 0.5) * 2.6]]));
+  g.circ(0.5, 0.17, 0.02, true);
+};
+XR.teddy = g => {
+  g.circ(0.5, 0.26, 0.2); g.circ(0.33, 0.1, 0.07); g.circ(0.67, 0.1, 0.07); g.ell(0.5, 0.66, 0.3, 0.3);
+  g.thin(0.5);
+  for (let i = 0; i < 22; i++) { const a = i * 2.39996, r = Math.sqrt(i / 22) * 0.24; g.circ(0.5 + Math.cos(a) * r, 0.66 + Math.sin(a) * r * 0.95 + Math.sin(g.t * 2 + i) * 0.005, 0.05, true); }
+  for (let i = 0; i < 9; i++) { const a = i * 2.39996, r = Math.sqrt(i / 9) * 0.14; g.circ(0.5 + Math.cos(a) * r, 0.27 + Math.sin(a) * r, 0.04, true); }
+  g.thin(0.8); g.dash(true); g.line([[0.5, 0.06], [0.5, 0.96]]); g.dash(false);
+  const hb = 0.03 + 0.005 * Math.sin(g.t * 6);
+  g.line([[0.5, 0.58 + hb], [0.5 - hb * 1.6, 0.58 - hb * 0.4], [0.5 - hb * 0.8, 0.58 - hb * 1.2], [0.5, 0.58 - hb * 0.6], [0.5 + hb * 0.8, 0.58 - hb * 1.2], [0.5 + hb * 1.6, 0.58 - hb * 0.4]], true, true);
+};
+XR.circuit = g => {
+  g.line([[0.06, 0.06], [0.94, 0.06], [0.94, 0.94], [0.06, 0.94]], true);
+  const tall = !g.wide;
+  const batt = tall ? [0.18, 0.5, 0.64, 0.36] : [0.55, 0.2, 0.36, 0.6];
+  g.rect(...batt, true); g.thin(0.7);
+  const bc = [batt[0] + batt[2] / 2, batt[1] + batt[3] / 2];
+  g.line([[bc[0] - 0.05, bc[1]], [bc[0] + 0.05, bc[1]]]); g.line([[bc[0], bc[1] - 0.04], [bc[0], bc[1] + 0.04]]);
+  const chips = tall ? [[0.22, 0.14, 0.22, 0.14], [0.56, 0.18, 0.2, 0.1], [0.3, 0.36, 0.12, 0.07]] : [[0.12, 0.2, 0.18, 0.24], [0.14, 0.58, 0.14, 0.18], [0.36, 0.3, 0.1, 0.14]];
+  chips.forEach(c => { g.rect(...c, true); for (let i = 1; i < 5; i++) { const u = c[0] + c[2] * i / 5; g.line([[u, c[1]], [u, c[1] - 0.025]]); g.line([[u, c[1] + c[3]], [u, c[1] + c[3] + 0.025]]); } });
+  const tr = tall ? [[[0.33, 0.28], [0.33, 0.33], [0.36, 0.36]], [[0.66, 0.28], [0.66, 0.44], [0.5, 0.44], [0.5, 0.5]], [[0.42, 0.4], [0.82, 0.4], [0.82, 0.86]], [[0.1, 0.3], [0.1, 0.86], [0.18, 0.86]]]
+    : [[[0.3, 0.32], [0.36, 0.32], [0.36, 0.36]], [[0.46, 0.37], [0.55, 0.37]], [[0.21, 0.44], [0.21, 0.58]], [[0.28, 0.67], [0.5, 0.67], [0.5, 0.75], [0.55, 0.75]], [[0.21, 0.2], [0.21, 0.1], [0.8, 0.1], [0.8, 0.2]]];
+  tr.forEach(p => { g.line(p); g.dot(...p[0], 0.008); g.dot(...p[p.length - 1], 0.008); });
+  // pulso de electricidade a percorrer os caminhos
+  const p = tr[Math.floor(g.t * 1.2) % tr.length], f = (g.t * 1.2) % 1, i = Math.min(p.length - 2, Math.floor(f * (p.length - 1))), s = f * (p.length - 1) - i;
+  g.dot(lerp(p[i][0], p[i + 1][0], s), lerp(p[i][1], p[i + 1][1], s), 0.018);
+  if (g.cls === 'remote') { g.circ(0.5, 0.04, 0.03, true); for (const a of [-0.5, 0, 0.5]) g.line([[0.5 + a * 0.05, 0.0], [0.5 + a * 0.18, -0.08]]); }
+};
+function gear(g, u, v, r, teeth, rot) {
+  const pts = [];
+  for (let i = 0; i < teeth * 2; i++) { const a = rot + i * Math.PI / teeth, rr = r * (i % 2 ? 0.8 : 1); pts.push([u + Math.cos(a) * rr * g.k / g.bw, v + Math.sin(a) * rr * g.k / g.bh]); }
+  g.line(pts, true, true); g.circ(u, v, r * 0.25);
+}
+XR.clock = g => {
+  g.ell(0.5, 0.5, 0.47, 0.47); gear(g, 0.4, 0.42, 0.2, 10, g.t * 0.8); gear(g, 0.64, 0.62, 0.14, 7, -g.t * 1.15 + 0.2);
+  g.thin(1.3); const a = g.t * 0.5; g.line([[0.5, 0.5], [0.5 + Math.cos(a) * 0.32, 0.5 + Math.sin(a) * 0.32]]); g.line([[0.5, 0.5], [0.5 + Math.cos(a / 12) * 0.2, 0.5 + Math.sin(a / 12) * 0.2]]);
+};
+XR.liquid = g => {
+  const neck = g.cls === 'bottle' ? 0.3 : 0;
+  g.line(neck ? [[0.38, 0.02], [0.38, 0.22], [0.15, 0.36], [0.15, 0.95], [0.85, 0.95], [0.85, 0.36], [0.62, 0.22], [0.62, 0.02]] : [[0.1, 0.05], [0.14, 0.95], [0.86, 0.95], [0.9, 0.05]]);
+  const lvl = neck ? 0.5 : 0.45, x0 = neck ? 0.16 : 0.12, x1 = neck ? 0.84 : 0.88;
+  const wave = Array.from({ length: 21 }, (_, i) => { const u = x0 + (x1 - x0) * i / 20; return [u, lvl + Math.sin(i * 0.9 + g.t * 3) * 0.015]; });
+  g.line([...wave, [x1, 0.93], [x0, 0.93]], true, true);
+  g.thin(0.6); for (let i = 0; i < 7; i++) { const ph = (g.t * 0.35 + i * 0.137) % 1; g.circ(x0 + 0.06 + ((i * 0.37) % 1) * (x1 - x0 - 0.12), 0.92 - ph * (0.92 - lvl - 0.03), 0.012 + 0.006 * (i % 3)); }
+};
+XR.book = g => {
+  g.rect(0.05, 0.04, 0.9, 0.92, true); g.thin(1.4); g.line([[0.12, 0.04], [0.12, 0.96]]);
+  g.thin(0.5); for (let v = 0.12; v < 0.9; v += 0.06) { let u = 0.2; while (u < 0.88) { const w = 0.04 + ((u * 97 + v * 31) % 0.1); g.line([[u, v], [Math.min(0.88, u + w), v]]); u += w + 0.025; } }
+};
+XR.quad = g => {
+  if (g.bh > g.bw * 1.2) { // de frente / sentado
+    g.ell(0.5, 0.18, 0.18, 0.12, true); g.circ(0.43, 0.17, 0.03); g.circ(0.57, 0.17, 0.03);
+    g.line([[0.5, 0.3], [0.5, 0.82]]);
+    for (let i = 0; i < 6; i++) { const v = 0.38 + i * 0.045, w = 0.17 - Math.abs(i - 2) * 0.015; g.curve(s => [0.5 - w + 2 * w * s, v + Math.sin(Math.PI * s) * 0.04], 12); }
+    g.ell(0.5, 0.8, 0.16, 0.06); for (const s of [-1, 1]) { g.line([[0.5 + s * 0.15, 0.36], [0.5 + s * 0.2, 0.62], [0.5 + s * 0.17, 0.95]]); g.line([[0.5 + s * 0.12, 0.82], [0.5 + s * 0.28, 0.9], [0.5 + s * 0.22, 0.97]]); }
+    return;
+  }
+  const gir = g.cls === 'giraffe', ele = g.cls === 'elephant';
+  const sh = gir ? [0.62, 0.5] : [0.72, 0.36], hip = [0.24, 0.4];
+  const skull = gir ? [0.82, 0.1] : ele ? [0.86, 0.32] : [0.86, 0.24];
+  g.ell(skull[0], skull[1], ele ? 0.11 : 0.09, ele ? 0.13 : 0.07, true, gir ? -0.3 : 0.15);
+  g.thin(0.8); g.curve(s => [lerp(sh[0], skull[0] - 0.04, s), lerp(sh[1], skull[1] + 0.04, s) - Math.sin(Math.PI * s) * 0.03], 10);
+  for (let s = 0; s <= 1; s += 0.2) g.dot(lerp(sh[0], skull[0] - 0.04, s), lerp(sh[1], skull[1] + 0.04, s) - Math.sin(Math.PI * s) * 0.03, 0.012);
+  if (ele) { g.curve(s => [0.9 + Math.sin(s * 2.2) * 0.05, 0.4 + s * 0.45], 12); g.curve(s => [0.84 + s * 0.12, 0.42 + Math.sin(s * 3) * 0.06], 8); }
+  g.thin(1.2); g.curve(s => [lerp(hip[0], sh[0], s), lerp(hip[1], sh[1], s) - Math.sin(Math.PI * s) * 0.05], 16);
+  g.thin(0.8); g.curve(s => [hip[0] - s * 0.2, hip[1] + Math.sin(s * 2) * 0.15], 10);
+  for (let i = 0; i < 8; i++) { const u = lerp(sh[0] - 0.03, hip[0] + 0.14, i / 7), v0 = lerp(sh[1], hip[1], (u - sh[0]) / (hip[0] - sh[0])) - 0.04; g.curve(s => [u - s * 0.04, v0 + s * (0.24 - Math.abs(i - 3) * 0.015)], 8); }
+  g.ell(hip[0] + 0.02, hip[1] + 0.03, 0.07, 0.06);
+  for (const [x, dx] of [[sh[0] - 0.02, 0.02], [sh[0] + 0.02, -0.01], [hip[0], 0.03], [hip[0] + 0.05, -0.02]]) { g.line([[x, sh[1] === hip[1] ? hip[1] : (x > 0.5 ? sh[1] : hip[1]) + 0.05], [x + dx, 0.72], [x - dx, 0.94]]); g.dot(x + dx, 0.72, 0.012); }
+};
+XR.bird = g => {
+  g.ell(0.75, 0.25, 0.09, 0.08, true); g.line([[0.83, 0.24], [0.97, 0.28], [0.83, 0.3]], true);
+  g.thin(0.8); g.curve(s => [0.7 - s * 0.12, 0.3 + s * 0.15 + Math.sin(s * 6) * 0.02], 10);
+  g.ell(0.48, 0.55, 0.16, 0.14, true); for (let i = 0; i < 5; i++) g.curve(s => [0.38 + i * 0.05, 0.45 + s * 0.2], 6);
+  g.thin(1.1); g.line([[0.55, 0.45], [0.35, 0.3], [0.12, 0.38]]); g.thin(0.6); for (let i = 0; i < 5; i++) g.line([[0.12 + i * 0.04, 0.37 - i * 0.01], [0.05 + i * 0.05, 0.25 - i * 0.02]]);
+  g.thin(0.9); g.line([[0.32, 0.6], [0.12, 0.66]]); for (const x of [0.44, 0.52]) { g.line([[x, 0.66], [x - 0.02, 0.8], [x + 0.01, 0.95]]); g.line([[x + 0.01, 0.95], [x + 0.06, 0.97]]); g.line([[x + 0.01, 0.95], [x - 0.04, 0.97]]); }
+};
+XR.car = g => {
+  for (const u of [0.22, 0.78]) { g.ell(u, 0.8, 0.12, 0.14, true); g.ell(u, 0.8, 0.03, 0.035); for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3 + g.t * 3; g.line([[u, 0.8], [u + Math.cos(a) * 0.1, 0.8 + Math.sin(a) * 0.12]]); } }
+  g.thin(1.2); g.line([[0.22, 0.8], [0.78, 0.8]]); g.line([[0.05, 0.62], [0.95, 0.62]]);
+  g.thin(0.8); g.rect(0.7, 0.4, 0.2, 0.2, true); for (let i = 0; i < 4; i++) { const ph = Math.sin(g.t * 10 + i * 1.6) * 0.03; g.rect(0.72 + i * 0.045, 0.43 + ph, 0.03, 0.08); }
+  g.line([[0.7, 0.55], [0.55, 0.55], [0.55, 0.8]]); g.rect(0.15, 0.3, 0.12, 0.3); g.rect(0.35, 0.3, 0.12, 0.3);
+};
+XR.bike = g => {
+  for (const u of [0.2, 0.8]) { g.circ(u, 0.68, 0.22); for (let i = 0; i < 12; i++) { const a = i * Math.PI / 6 + g.t * 2; g.line([[u, 0.68], [u + Math.cos(a) * 0.21 * g.k / g.bw, 0.68 + Math.sin(a) * 0.21 * g.k / g.bh]]); } }
+  g.thin(1.3); g.line([[0.2, 0.68], [0.42, 0.68], [0.36, 0.38], [0.2, 0.68]]); g.line([[0.42, 0.68], [0.72, 0.38], [0.36, 0.38]]); g.line([[0.72, 0.38], [0.8, 0.68]]);
+  g.line([[0.72, 0.38], [0.7, 0.22], [0.78, 0.2]]); g.line([[0.36, 0.38], [0.34, 0.28]]); g.line([[0.28, 0.27], [0.4, 0.27]]);
+  if (g.cls === 'motorcycle') g.rect(0.42, 0.42, 0.18, 0.18, true);
+};
+XR.plane = g => { g.ell(0.5, 0.5, 0.46, 0.1, true); g.thin(0.8); for (let i = 0; i < 9; i++) g.line([[0.12 + i * 0.09, 0.41], [0.12 + i * 0.09, 0.59]]); g.line([[0.55, 0.5], [0.35, 0.05], [0.45, 0.05], [0.65, 0.5], [0.45, 0.95], [0.35, 0.95], [0.55, 0.5]]); g.line([[0.1, 0.5], [0.04, 0.25], [0.1, 0.25], [0.18, 0.48]]); };
+XR.boat = g => { g.line([[0.03, 0.55], [0.97, 0.55], [0.82, 0.92], [0.18, 0.92]], true, true); g.thin(0.8); for (let i = 1; i < 9; i++) { const u = 0.03 + i * 0.105; g.line([[u, 0.56], [lerp(0.18, 0.82, (u - 0.03) / 0.94), 0.9]]); } g.line([[0.5, 0.55], [0.5, 0.05]]); g.line([[0.5, 0.08], [0.85, 0.48], [0.5, 0.48]], true); };
+XR.umbrella = g => { g.curve(s => [0.04 + 0.92 * s, 0.45 - Math.sin(Math.PI * s) * 0.38], 24); g.thin(0.8); for (let i = 0; i <= 6; i++) { const s = i / 6; g.line([[0.5, 0.07], [0.04 + 0.92 * s, 0.45 - Math.sin(Math.PI * s) * 0.38 + (i % 6 ? 0 : 0)]]); } g.thin(1.3); g.line([[0.5, 0.07], [0.5, 0.88]]); g.curve(s => [0.5 - Math.sin(s * Math.PI) * 0.08, 0.88 + Math.cos(s * Math.PI) * -0.06 + 0.06], 10); };
+XR.scissors = g => { g.thin(1.3); g.line([[0.05, 0.2], [0.62, 0.55]]); g.line([[0.05, 0.8], [0.62, 0.45]]); g.circ(0.5, 0.5, 0.05, true); g.ell(0.78, 0.35, 0.16, 0.16); g.ell(0.78, 0.68, 0.16, 0.16); };
+XR.toothbrush = g => { const sw = (u, v) => g.wide ? [u, v] : [v, u]; g.line([sw(0.02, 0.6), sw(0.98, 0.6), sw(0.98, 0.75), sw(0.02, 0.75)].map(p => p), true, true); g.thin(0.6); for (let u = 0.04; u < 0.3; u += 0.025) g.line([sw(u, 0.58), sw(u, 0.2 + Math.sin(u * 60 + g.t * 4) * 0.03)]); };
+XR.layers = g => { const n = g.cls === 'cake' ? 4 : 5; for (let i = 0; i <= n; i++) { const v = 0.25 + i * 0.7 / n; g.curve(s => [0.05 + 0.9 * s, v + Math.sin(s * 14 + i) * 0.015], 20); } g.line([[0.05, 0.25], [0.05, 0.95]]); g.line([[0.95, 0.25], [0.95, 0.95]]); if (g.cls === 'cake') for (const u of [0.3, 0.5, 0.7]) { g.line([[u, 0.25], [u, 0.08]]); g.ell(u, 0.05 + Math.sin(g.t * 9 + u * 9) * 0.01, 0.015, 0.03, true); } };
+XR.pizza = g => { g.ell(0.5, 0.5, 0.47, 0.47, true); g.thin(0.8); for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; g.line([[0.5, 0.5], [0.5 + Math.cos(a) * 0.47, 0.5 + Math.sin(a) * 0.47]]); } [[0.35, 0.3], [0.65, 0.35], [0.3, 0.62], [0.6, 0.7], [0.5, 0.48]].forEach(([u, v]) => g.ell(u, v, 0.05, 0.05, true)); };
+XR.donut = g => { g.ell(0.5, 0.5, 0.47, 0.47, true); g.ell(0.5, 0.5, 0.15, 0.15); g.thin(0.8); for (let i = 0; i < 14; i++) { const a = i * 0.45, r = 0.25 + (i % 3) * 0.05; const u = 0.5 + Math.cos(a) * r, v = 0.5 + Math.sin(a) * r; g.line([[u, v], [u + 0.03, v + 0.02]]); } };
+XR.plant = g => { g.line([[0.2, 0.55], [0.8, 0.55], [0.72, 0.98], [0.28, 0.98]], true, true); g.thin(0.7); const roots = (u, v, d, a) => { if (d > 3) return; const u2 = u + Math.sin(a) * 0.12 / d, v2 = v + 0.12 / d; g.line([[u, v], [u2, v2]]); roots(u2, v2, d + 1, a - 0.5); roots(u2, v2, d + 1, a + 0.5); }; roots(0.5, 0.58, 1, 0); g.thin(1); g.line([[0.5, 0.58], [0.5, 0.15]]); for (const [u, v] of [[0.3, 0.2], [0.72, 0.28], [0.32, 0.42], [0.7, 0.08]]) { g.ell(u, v, 0.13, 0.06, true, u < 0.5 ? 0.4 : -0.4); g.line([[0.5, v + 0.04], [u, v]]); } const ph = (g.t * 0.6) % 1; g.dot(0.5, 0.58 - ph * 0.4, 0.015); };
+XR.layers2 = XR.layers;
+
+// ---------- etiquetas dos objectos (no canvas das etiquetas, espelhado)
+function drawObjLabels(t, st) {
+  const ctx = lctx; const sc = lCanvas.width / vw; ctx.setTransform(sc, 0, 0, sc, 0, 0);
+  const u = vw / cssW, fs = 16 * u, h = 30 * u;
+  ctx.font = `600 ${fs}px Fredoka, "Segoe UI", sans-serif`; ctx.textBaseline = 'middle';
+  const target = hunt && hunt.phase === 'ask' ? hunt.list[hunt.i] : null;
+  for (const tr of objTracks) {
+    if (tr.hits < 2) continue;
+    const o = OBJECTS[tr.cls]; const [bx, by, bw, bh] = tr.b;
+    const x0 = vw - (bx + bw), y0 = by, x1 = vw - bx, y1 = by + bh, c = Math.min(bw, bh) * 0.18;
+    const hot = (selected && selected.id === 'obj-' + tr.cls) || tr.cls === target;
+    ctx.globalAlpha = clamp((t - tr.first) / 0.4, 0, 1) * clamp(1 - (t - tr.last - 0.5) / 0.5, 0, 1);
+    ctx.strokeStyle = hot ? '#ffd166' : '#6fe3ff'; ctx.lineWidth = (hot ? 4 : 2.5) * u; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const [x, y, dx, dy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]]) { ctx.moveTo(x, y + dy * c); ctx.lineTo(x, y); ctx.lineTo(x + dx * c, y); }
+    ctx.stroke();
+    const txt = `${o.e} ${cap(o.n)}`, en = S.objEN ? `  ${o.en}` : '';
+    ctx.font = `600 ${fs}px Fredoka, "Segoe UI", sans-serif`; const w1 = ctx.measureText(txt).width;
+    ctx.font = `400 ${fs * 0.85}px Fredoka, "Segoe UI", sans-serif`; const w2 = en ? ctx.measureText(en).width : 0;
+    const pw = w1 + w2 + 20 * u, px = clamp(x0, 4 * u, vw - pw - 4 * u), py = y0 - h - 6 * u < 4 * u ? y0 + 6 * u : y0 - h - 6 * u;
+    ctx.fillStyle = hot ? 'rgba(60,44,0,0.92)' : 'rgba(6,14,30,0.85)'; roundRect(ctx, px, py, pw, h, h / 2); ctx.fill();
+    ctx.lineWidth = 1.5 * u; ctx.stroke();
+    ctx.fillStyle = '#f2fbff'; ctx.font = `600 ${fs}px Fredoka, "Segoe UI", sans-serif`; ctx.fillText(txt, px + 10 * u, py + h / 2 + u);
+    if (en) { ctx.fillStyle = '#9fe3ff'; ctx.font = `400 ${fs * 0.85}px Fredoka, "Segoe UI", sans-serif`; ctx.fillText(en, px + 10 * u + w1, py + h / 2 + u); }
+    tr.labelBox = [px, py, pw, h];
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------- caça ao tesouro
+let hunt = null;
+function objIntro() {
+  promptShow('📦', TXT.objIntro, '', null, null, '', [{ html: '<b>🎯</b>Caça ao tesouro', on: startHunt }]);
+  speak(TXT.objIntro);
+}
+function startHunt() {
+  const pool = shuffle(Object.keys(OBJECTS).filter(k => OBJECTS[k].cacar));
+  hunt = { list: pool.slice(0, 5), i: -1, stars: 0, phase: 'next', t: 0 };
+  nextHunt();
+}
+const huntStars = () => '⭐'.repeat(hunt.stars) + '☆'.repeat(hunt.list.length - hunt.stars);
+function nextHunt() {
+  hunt.i++; hunt.t = performance.now();
+  if (hunt.i >= hunt.list.length) {
+    hunt.phase = 'end';
+    const msg = hunt.stars === hunt.list.length ? 'Encontraste tudo! És um verdadeiro detective!' : `Encontraste ${hunt.stars} de ${hunt.list.length}! Muito bem!`;
+    promptShow('🏆', msg, huntStars(), null, null, 'ok', [{ html: '<b>🔁</b>Jogar outra vez', on: startHunt }]);
+    speak(msg); confetti(vw / 2, vh * 0.35, 160); sndOk();
+    return;
+  }
+  hunt.phase = 'ask';
+  const o = OBJECTS[hunt.list[hunt.i]];
+  const msg = `Encontra ${o.a} ${o.n}!`;
+  promptShow(o.e, msg, huntStars(), null, null, '', [{ html: '<b>⏭️</b>Não temos — outra!', on: () => { hunt.phase = 'skip'; hunt.t = 0; } }]);
+  speak(msg + ' Mostra à câmara.');
+}
+function updateObjMode(t, now, dt) {
+  const st = stableObjs(t);
+  // resumo
+  const sumEl = $('#objSummary');
+  if (!objLM) { sumEl.hidden = true; }
+  else {
+    if (st.length) objNoneSince = 0; else if (!objNoneSince) objNoneSince = now;
+    const txt = st.length ? `Vejo: ${objSummaryText(st)}` : (now - objNoneSince > 4000 ? TXT.objNada : '');
+    if (sumEl.textContent !== txt) sumEl.textContent = txt;
+    sumEl.hidden = !txt || !$('#card').hidden;
+  }
+  // caça ao tesouro
+  if (hunt) {
+    const el = (now - hunt.t) / 1000;
+    if (hunt.phase === 'ask') {
+      const tr = st.find(x => x.cls === hunt.list[hunt.i]);
+      if (tr) {
+        const o = OBJECTS[tr.cls]; hunt.phase = 'ok'; hunt.stars++; hunt.t = now;
+        const msg = `Boa! Encontraste ${o.a} ${o.n}!` + (S.objEN ? ` Em inglês: ${o.en}.` : '');
+        promptShow('🎉', msg, huntStars(), null, null, 'ok'); speak(msg); sndOk();
+        confetti(vw - (tr.b[0] + tr.b[2] / 2), tr.b[1] + tr.b[3] / 2);
+        selected = { id: 'obj-' + tr.cls, until: now + 3000 };
+      } else if (el > 60) { hunt.phase = 'skip'; hunt.t = now; }
+    } else if (hunt.phase === 'skip') {
+      if (!hunt.skipSaid) { hunt.skipSaid = true; promptShow('🙂', 'Vamos procurar outra coisa!', huntStars(), null); speak('Vamos procurar outra coisa!'); hunt.t = now; }
+      else if (el > 1.8) { hunt.skipSaid = false; nextHunt(); }
+    } else if (hunt.phase === 'ok' && el > 3) nextHunt();
+    return;
+  }
+  // anunciar objectos novos (um de cada vez; volta a dizer se o objecto desaparecer mais de 6 s)
+  for (const tr of st) {
+    const prev = objSaid[tr.cls];
+    if (!prev || now - prev > 6000) {
+      if (now - objLastSay > 2500) {
+        const o = OBJECTS[tr.cls]; objSaid[tr.cls] = now; objLastSay = now;
+        speak(`${cap(o.a)} ${o.n}!` + (S.objEN ? ` Em inglês: ${o.en}.` : ''));
+      }
+    } else objSaid[tr.cls] = now;
+  }
+  // apontar com o dedo para um objecto
+  const tips = fingerTips();
+  let hit = null;
+  for (const tip of tips) for (const tr of st) { const [bx, by, bw, bh] = tr.b; if (tip[0] > bx && tip[0] < bx + bw && tip[1] > by && tip[1] < by + bh) hit = { tr, tip }; }
+  if (hit) {
+    const id = 'obj' + hit.tr.id;
+    if (dwell.id === id) dwell.t += dt; else { dwell.id = id; dwell.t = 0; }
+    if (!(dwell.last === id && now - dwell.lastAt < 5000)) {
+      fxDraw.progress = { x: hit.tip[0], y: hit.tip[1], p: clamp(dwell.t / 0.7, 0, 1) };
+      if (dwell.t > 0.7) { showCard({ item: objItem(hit.tr.cls), id: 'obj-' + hit.tr.cls, kind: 'obj' }); dwell.last = id; dwell.lastAt = now; }
+    }
+  }
+}
+
 // ------------------------------------------------------------------ ciclo principal
 let noFaceSince = 0;
 function frame(nowMs) {
@@ -1433,12 +1773,14 @@ function frame(nowMs) {
     else { f.mgeo = null; if (forced && f === f0 && MUSCLES.some(m => forced.includes(m.id))) drawMuscles(f, t, forced); }
   }
 
+  if (mode === 'objectos' && S.objXray) for (const tr of objTracks) if (tr.hits >= 2) drawObjXray(tr, t);
   const st = revealState(f0);
   applyMaskCss(st); applyBackdrop();
   if (selected && now > selected.until && $('#card').hidden) selected = null;
   updateInteraction(f0, dt, now);
   renderer.render(scene, camera);
   drawLabels(f0, st);
+  if (mode === 'objectos') { drawObjLabels(t, st); updateObjMode(t, now, dt); } else $('#objSummary').hidden = true;
   drawTracking();
   drawFx(dt, st, now);
   recFrame(now);
@@ -1447,8 +1789,8 @@ function frame(nowMs) {
   const hint = $('#hint');
   if (!f0 && !bodyRig?.on) { if (!noFaceSince) noFaceSince = now; } else noFaceSince = 0;
   let msg = '';
-  if (noFaceSince && now - noFaceSince > 1500) msg = TXT.semCara;
-  else if (f0 && f0.faceW < vw * 0.12) msg = TXT.perto;
+  if (noFaceSince && now - noFaceSince > 1500 && mode !== 'objectos') msg = TXT.semCara;
+  else if (f0 && f0.faceW < vw * 0.12 && mode !== 'objectos') msg = TXT.perto;
   else if (hint.textContent === TXT.semMao && mode === 'desafio' && ch?.list[ch.i]?.tipo === 'toque' && !fingerTips().length) msg = TXT.semMao;
   if (hint.textContent !== msg) hint.textContent = msg;
   hint.hidden = !msg;
@@ -1582,6 +1924,7 @@ function initUI() {
   $('#btnFitReset').onclick = () => { S.fit = { ...FIT_PRESETS.adulto }; refreshUI(); };
   $$('.modes button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
   $('#btnFoto').onclick = takePhoto;
+  $('#objSummary').onclick = () => { const t = $('#objSummary').textContent; if (t) speak(t.replace('Vejo:', 'Estou a ver')); };
   $('#btnRec').onclick = toggleRec;
   $('#btnVoz').onclick = () => { S.voice = !S.voice; if (!S.voice) stopSpeech(); refreshUI(); };
   $('#btnFile').onclick = () => $('#fileIn').click();
@@ -1600,7 +1943,15 @@ function initUI() {
   stage.addEventListener('pointermove', e => { pointer = toVid(e); });
   stage.addEventListener('pointerleave', () => { pointer = null; });
   stage.addEventListener('click', e => {
-    if (e.target.closest('#card, #prompt, #quiz')) return;
+    if (e.target.closest('#card, #prompt, #quiz, #objSummary')) return;
+    const [x0c, y0c] = toVid(e);
+    if (mode === 'objectos') {
+      const xd0 = vw - x0c;
+      for (const tr of objTracks) {
+        const lb = tr.labelBox, [bx, by, bw, bh] = tr.b;
+        if ((lb && xd0 >= lb[0] && xd0 <= lb[0] + lb[2] && y0c >= lb[1] && y0c <= lb[1] + lb[3]) || (x0c > bx && x0c < bx + bw && y0c > by && y0c < by + bh)) { showCard({ item: objItem(tr.cls), id: 'obj-' + tr.cls, kind: 'obj' }); return; }
+      }
+    }
     const f0 = primaryFace(); if (!f0 && !bodyRig?.on) return;
     const [x, y] = toVid(e);
     // clique num rótulo
@@ -1701,4 +2052,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { S, faces, hands, body, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, toggleRec };
+window.espelho = { S, faces, hands, body, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, toggleRec };
