@@ -280,3 +280,131 @@ export const OBJECTS = {
   'toothbrush': { n: 'escova de dentes', p: 'escovas de dentes', a: 'uma', en: 'toothbrush', e: '🪥', x: 'toothbrush', f: 'Escova os dentes duas vezes por dia, durante dois minutos!', cacar: true },
 };
 export const objPlural = o => o.p || (o.n.endsWith('l') ? o.n.slice(0, -1) + 'is' : o.n.endsWith('r') ? o.n + 'es' : o.n + 's');
+
+// ================================================================== ESCADA DE 12 NÍVEIS (dos 3 anos ao médico)
+export const ETAPAS = {
+  pequeninos: { nome: 'Pequeninos', emoji: '🐣', idade: '3–5 anos' },
+  exploradores: { nome: 'Exploradores', emoji: '🧭', idade: '6–9 anos' },
+  cientistas: { nome: 'Cientistas', emoji: '🔬', idade: '10–14 anos' },
+  medicina: { nome: 'Estudante de Medicina', emoji: '🎓', idade: 'universidade' },
+  medico: { nome: 'Médico', emoji: '🩺', idade: 'profissional' },
+};
+// mix: tipos de ronda que se alternam. cient: nomes científicos. mestre: só o nome do músculo, sem dica.
+export const LADDER = [
+  { etapa: 'pequeninos', titulo: 'Caretas', rondas: 6, tempo: 35, mix: [['cara', 'simples']] },
+  { etapa: 'pequeninos', titulo: 'Mais caretas', rondas: 6, tempo: 35, mix: [['cara', 'todas']] },
+  { etapa: 'pequeninos', titulo: 'Toca e faz', rondas: 7, tempo: 32, mix: [['cara', 'todas'], ['toque', 'simples']] },
+  { etapa: 'exploradores', titulo: 'Exploradores', rondas: 8, tempo: 25, mix: [['cara', 'todas'], ['toque', 'todas'], ['corpo']] },
+  { etapa: 'exploradores', titulo: 'Esquerda e direita', rondas: 8, tempo: 25, mix: [['lado'], ['toque', 'todas'], ['seq', 2], ['corpo']] },
+  { etapa: 'exploradores', titulo: 'Duas coisas ao mesmo tempo', rondas: 9, tempo: 22, mix: [['combo'], ['seq', 3], ['quiz', 1], ['lado']] },
+  { etapa: 'cientistas', titulo: 'Nomes científicos', rondas: 9, tempo: 22, cient: true, mix: [['toque', 'todas'], ['cara', 'todas'], ['quiz', 1]] },
+  { etapa: 'cientistas', titulo: 'Que osso é este?', rondas: 10, tempo: 20, cient: true, mix: [['qualOsso'], ['lado'], ['quiz', 2]] },
+  { etapa: 'cientistas', titulo: 'Músculos pelo nome', rondas: 10, tempo: 20, cient: true, mestre: true, mix: [['cara', 'todas'], ['qualMusculo'], ['quiz', 2], ['combo']] },
+  { etapa: 'medicina', titulo: 'Pontos craniométricos e forames', rondas: 10, tempo: 18, cient: true, mix: [['marco'], ['quiz', 3], ['qualOsso']] },
+  { etapa: 'medicina', titulo: 'Exame dos nervos cranianos', rondas: 10, tempo: 18, cient: true, mix: [['clinico'], ['olhar'], ['quiz', 4], ['marco']] },
+  { etapa: 'medico', titulo: 'Exame completo', rondas: 12, tempo: 14, cient: true, mestre: true, mix: [['marco'], ['clinico'], ['olhar'], ['quiz', 4], ['seq', 4], ['qualMusculo'], ['quiz', 3]] },
+];
+
+// Tocar no lado certo. {lado} é substituído por esquerda/esquerdo ou direita/direito (lado da pessoa).
+export const LADO = [
+  { alvo: 'zigomatico', pede: 'Toca na tua bochecha {lado}!', g: 'f', cient: 'Toca no teu osso zigomático {lado}!', gc: 'm' },
+  { alvo: 'temporal', pede: 'Toca por cima da tua orelha {lado}!', g: 'f', cient: 'Toca no teu osso temporal {lado}!', gc: 'm' },
+  { alvo: 'mandibula', pede: 'Toca no teu maxilar de baixo, do lado {lado}!', g: 'm', cient: 'Toca no ângulo {lado} da tua mandíbula!', gc: 'm' },
+  { alvo: 'maxila', pede: 'Toca ao lado do nariz, em cima do lábio, do lado {lado}!', g: 'm', cient: 'Toca na tua maxila, do lado {lado}!', gc: 'm' },
+];
+
+// Duas coisas ao mesmo tempo
+const avg = (b, a, c) => ((b[a] || 0) + (b[c] || 0)) / 2;
+const SMILE = b => avg(b, 'mouthSmileLeft', 'mouthSmileRight') > 0.5;
+const EYES = b => avg(b, 'eyeBlinkLeft', 'eyeBlinkRight') > 0.55;
+const BROWS = b => (b.browInnerUp || 0) > 0.5 || avg(b, 'browOuterUpLeft', 'browOuterUpRight') > 0.4;
+const JAW = b => (b.jawOpen || 0) > 0.45;
+const KISS = b => (b.mouthPucker || 0) > 0.5;
+const ANGRY = b => avg(b, 'browDownLeft', 'browDownRight') > 0.35;
+const SAD = b => avg(b, 'mouthFrownLeft', 'mouthFrownRight') * 2.4 > 0.45 || avg(b, 'mouthLowerDownLeft', 'mouthLowerDownRight') > 0.35;
+export const COMBOS = [
+  { pede: 'Sorri e fecha os olhos ao mesmo tempo!', emoji: '😊', alvos: ['mZigomatico', 'mOrbOlho'], teste: b => SMILE(b) && EYES(b), ok: 'Uau! Dois músculos ao mesmo tempo!' },
+  { pede: 'Abre a boca e levanta as sobrancelhas!', emoji: '😱', alvos: ['mFrontal'], teste: b => JAW(b) && BROWS(b), ok: 'Que susto! Mandíbula e músculo frontal a trabalhar juntos.' },
+  { pede: 'Faz um beijinho e fecha os olhos!', emoji: '😚', alvos: ['mOrbBoca', 'mOrbOlho'], teste: b => KISS(b) && EYES(b), ok: 'Mua! Os dois orbiculares ao mesmo tempo.' },
+  { pede: 'Faz cara de zangado e abre a boca!', emoji: '😡', alvos: ['mCorrugador'], teste: b => ANGRY(b) && JAW(b), ok: 'Grrr! Corrugadores e mandíbula juntos.' },
+  { pede: 'Sorri e levanta as sobrancelhas!', emoji: '😄', alvos: ['mZigomatico', 'mFrontal'], teste: b => SMILE(b) && BROWS(b), ok: 'Que alegria! Zigomáticos e frontal.' },
+];
+// Sequências (Simão diz)
+export const SEQ_ITEMS = [
+  { emoji: '😁', nome: 'sorri', teste: SMILE }, { emoji: '😮', nome: 'abre a boca', teste: JAW },
+  { emoji: '😘', nome: 'faz um beijinho', teste: KISS }, { emoji: '😑', nome: 'fecha os olhos', teste: EYES },
+  { emoji: '🤨', nome: 'levanta as sobrancelhas', teste: BROWS }, { emoji: '😠', nome: 'faz cara de zangado', teste: ANGRY },
+];
+
+// Pontos anatómicos (craniometria e forames) — coordenadas no referencial da cabeça (cm)
+export const LANDMARKS = [
+  { id: 'glabela', nome: 'glabela', a: [0, 2.9, 7.75], facto: 'A glabela é a saliência lisa entre as sobrancelhas, no osso frontal.' },
+  { id: 'nasio', nome: 'násio', a: [0, 1.5, 7.55], facto: 'O násio é onde o osso frontal encontra os ossos nasais, na raiz do nariz.' },
+  { id: 'vertice', nome: 'vértice', a: [0, 10.5, 0.5], facto: 'O vértice é o ponto mais alto do crânio.' },
+  { id: 'pogonio', nome: 'pogónio', a: [0, -9.3, 5.6], jaw: true, facto: 'O pogónio é o ponto mais anterior do mento, no queixo.' },
+  { id: 'gonio', nome: 'gónio', a: [4.9, -7.0, 0.6], par: true, jaw: true, g: 'm', facto: 'O gónio é o ponto do ângulo da mandíbula.' },
+  { id: 'atm', nome: 'articulação temporomandibular', a: [5.7, -0.4, -0.4], par: true, g: 'f', facto: 'A ATM palpa-se à frente do trago: sente-a a mexer quando abres a boca.' },
+  { id: 'arcoZig', nome: 'arco zigomático', a: [6.1, -1.1, 1.8], par: true, g: 'm', facto: 'O arco zigomático une o osso zigomático ao temporal; o masseter prende-se por baixo dele.' },
+  { id: 'mastoide', nome: 'processo mastoide', a: [5.9, -2.6, -2.0], par: true, g: 'm', facto: 'O processo mastoide fica atrás da orelha; nele insere-se o músculo esternocleidomastóideo.' },
+  { id: 'pterio', nome: 'ptério', a: [6.0, 3.0, 2.8], par: true, g: 'm', facto: 'No ptério juntam-se o frontal, o parietal, o temporal e o esfenóide; por baixo passa a artéria meníngea média.' },
+  { id: 'forSupra', nome: 'forame supraorbitário', a: [2.5, 2.9, 7.1], par: true, g: 'm', facto: 'Por ele saem o nervo e os vasos supraorbitários, ramos do nervo oftálmico (V1).' },
+  { id: 'forInfra', nome: 'forame infraorbitário', a: [2.5, -1.6, 6.6], par: true, g: 'm', facto: 'Por ele sai o nervo infraorbitário, ramo do nervo maxilar (V2).' },
+  { id: 'forMento', nome: 'forame mentoniano', a: [2.4, -8.3, 4.6], par: true, jaw: true, g: 'm', facto: 'Por ele sai o nervo mentoniano, ramo do nervo mandibular (V3). Os três forames ficam mais ou menos na mesma vertical.' },
+];
+
+// Simulação de exame (treino — não é diagnóstico)
+export const CLINICAL = [
+  { pede: 'Exame do VII — ramo temporal: eleva as sobrancelhas e franze a testa.', emoji: '🤨', alvos: ['mFrontal'], teste: BROWS, ok: 'Frontal contraído: ramo temporal do nervo facial (VII).' },
+  { pede: 'Exame do VII — ramo zigomático: fecha os olhos com força.', emoji: '😖', alvos: ['mOrbOlho'], teste: EYES, ok: 'Orbicular do olho contraído: ramos temporal e zigomático do VII.' },
+  { pede: 'Exame do VII — ramo bucal: mostra os dentes num sorriso largo.', emoji: '😬', alvos: ['mZigomatico'], teste: SMILE, ok: 'Zigomáticos e levantadores do lábio: ramos zigomático e bucal do VII.' },
+  { pede: 'Exame do VII — ramo bucal: faz bico, como para assobiar.', emoji: '😗', alvos: ['mOrbBoca'], teste: KISS, ok: 'Orbicular da boca contraído: ramo bucal do VII.' },
+  { pede: 'Exame do VII — ramo marginal da mandíbula: puxa os cantos da boca e o lábio de baixo para baixo.', emoji: '☹️', alvos: ['mDepressor'], teste: SAD, ok: 'Depressores do ângulo e do lábio inferior: ramo marginal da mandíbula do VII.' },
+  { pede: 'Exame do V3 motor: cerra os dentes e mastiga.', emoji: '😤', alvos: ['mMasseter'], teste: (b, e) => e.mastigar > 0.5, hold: 0.8, ok: 'Masseter e temporal: raiz motora do nervo mandibular (V3).' },
+];
+// Movimentos oculares (III, IV, VI). dir: esq/dir = lado da pessoa.
+export const GAZE = [
+  { dir: 'esq', pede: 'Motilidade ocular: olha para a tua esquerda, sem rodar a cabeça.', emoji: '👈', ok: 'Olhar conjugado à esquerda: recto lateral esquerdo (VI) e recto medial direito (III).' },
+  { dir: 'dir', pede: 'Motilidade ocular: olha para a tua direita, sem rodar a cabeça.', emoji: '👉', ok: 'Olhar conjugado à direita: recto lateral direito (VI) e recto medial esquerdo (III).' },
+  { dir: 'cima', pede: 'Motilidade ocular: olha para cima, sem mexer a cabeça.', emoji: '👆', ok: 'Olhar para cima: rectos superiores e oblíquos inferiores (III).' },
+  { dir: 'baixo', pede: 'Motilidade ocular: olha para baixo, sem mexer a cabeça.', emoji: '👇', ok: 'Olhar para baixo: rectos inferiores (III) e oblíquos superiores (IV).' },
+];
+
+// Perguntas mais difíceis (d = grau: 2 escola, 3 anatomia, 4 clínica)
+export const QUIZ_MAIS = [
+  { d: 2, p: 'Quantos ossos tem o crânio?', o: ['12', '22', '32'], c: 1, explica: 'São 22: 8 do neurocrânio e 14 da face.' },
+  { d: 2, p: 'Qual é o osso mais pequeno do corpo?', o: ['Estribo, no ouvido', 'Falange do mindinho', 'Osso nasal'], c: 0, explica: 'O estribo, no ouvido médio, mede só uns 3 milímetros.' },
+  { d: 2, p: 'Que ossos protegem o coração e os pulmões?', o: ['Bacia', 'Costelas e esterno', 'Omoplatas'], c: 1, explica: 'A caixa torácica é feita pelas costelas, o esterno e a coluna.' },
+  { d: 2, p: 'Onde fica o cerebelo?', o: ['Atrás e por baixo do cérebro', 'Atrás da testa', 'Dentro do pescoço'], c: 0, explica: 'O cerebelo fica na parte de trás e de baixo da cabeça.' },
+  { d: 2, p: 'O que liga os músculos aos ossos?', o: ['Ligamentos', 'Tendões', 'Nervos'], c: 1, explica: 'Os tendões ligam músculo a osso; os ligamentos ligam osso a osso.' },
+  { d: 2, p: 'Quantos ossos tem cada pulso?', o: ['5', '8', '12'], c: 1, explica: 'São 8 ossos do carpo em cada pulso.' },
+  { d: 2, p: 'O nariz é feito só de osso?', o: ['Sim', 'Não — a ponta é cartilagem'], c: 1, explica: 'Só a parte de cima é osso; a ponta e as asas do nariz são cartilagem.' },
+  { d: 2, p: 'Os bebés nascem com mais ou menos ossos do que os adultos?', o: ['Mais', 'Menos', 'O mesmo número'], c: 0, explica: 'Nascem com cerca de 270 a 300, que depois se juntam até ficarem 206.' },
+  { d: 2, p: 'Quantas vértebras tem a coluna toda?', o: ['24', '33', '50'], c: 1, explica: '33 vértebras, contando as do sacro e do cóccix, que se fundem.' },
+  { d: 2, p: 'Quantos dentes definitivos pode ter um adulto?', o: ['20', '28', '32'], c: 2, explica: 'Até 32, contando os 4 dentes do siso.' },
+  { d: 3, p: 'Quantos ossos formam a órbita?', o: ['5', '7', '9'], c: 1, explica: 'Sete: frontal, zigomático, maxila, esfenóide, etmóide, lacrimal e palatino.' },
+  { d: 3, p: 'Como se chama o encontro das suturas sagital e coronal?', o: ['Bregma', 'Lambda', 'Ptério'], c: 0, explica: 'Bregma. O lambda é o encontro da sagital com a lambdóide.' },
+  { d: 3, p: 'Que ossos se juntam no ptério?', o: ['Frontal, parietal, temporal e esfenóide', 'Occipital, parietal e temporal', 'Maxila, zigomático e nasal'], c: 0, explica: 'Frontal, parietal, temporal e asa maior do esfenóide.' },
+  { d: 3, p: 'A vértebra C1 chama-se…', o: ['Áxis', 'Atlas', 'Proeminente'], c: 1, explica: 'C1 é o atlas; C2 é o áxis; C7 é a vértebra proeminente.' },
+  { d: 3, p: 'O processo odontóide (dente) pertence a…', o: ['Atlas (C1)', 'Áxis (C2)', 'C7'], c: 1, explica: 'O dente do áxis articula com o arco anterior do atlas.' },
+  { d: 3, p: 'Quantos pares de costelas verdadeiras (vertebroesternais) há?', o: ['7', '10', '12'], c: 0, explica: 'As 7 primeiras ligam-se directamente ao esterno pela sua cartilagem.' },
+  { d: 3, p: 'Quais são as costelas flutuantes?', o: ['1.ª e 2.ª', '8.ª a 10.ª', '11.ª e 12.ª'], c: 2, explica: 'A 11.ª e a 12.ª não se ligam à frente.' },
+  { d: 3, p: 'O ângulo esternal (de Louis) está ao nível da…', o: ['1.ª costela', '2.ª cartilagem costal', '4.ª costela'], c: 1, explica: 'Marca a 2.ª cartilagem costal — o ponto de partida para contar as costelas.' },
+  { d: 3, p: 'Qual destes NÃO é um músculo da mastigação?', o: ['Bucinador', 'Temporal', 'Pterigóideo lateral'], c: 0, explica: 'O bucinador é um músculo da expressão facial, inervado pelo VII.' },
+  { d: 3, p: 'Quantos dentes decíduos (de leite) há por quadrante?', o: ['4', '5', '8'], c: 1, explica: '2 incisivos, 1 canino e 2 molares: 5 por quadrante, 20 no total.' },
+  { d: 3, p: 'O forame mentoniano fica habitualmente por baixo de que dente?', o: ['Canino', '2.º pré-molar', '2.º molar'], c: 1, explica: 'Geralmente por baixo do 2.º pré-molar, ou entre os pré-molares.' },
+  { d: 3, p: 'Que osso do carpo se fractura com mais frequência?', o: ['Semilunar', 'Pisiforme', 'Escafóide'], c: 2, explica: 'O escafóide, sobretudo em quedas sobre a mão estendida.' },
+  { d: 3, p: 'A articulação temporomandibular é do tipo…', o: ['Fibrosa', 'Sinovial', 'Cartilagínea'], c: 1, explica: 'É sinovial, com um disco articular entre o côndilo e a fossa mandibular.' },
+  { d: 4, p: 'Que nervo inerva os músculos da expressão facial?', o: ['Trigémio (V)', 'Facial (VII)', 'Hipoglosso (XII)'], c: 1, explica: 'O nervo facial (VII), pelos ramos temporal, zigomático, bucal, marginal da mandíbula e cervical.' },
+  { d: 4, p: 'Que nervo dá a inervação motora do masseter?', o: ['Mandibular (V3)', 'Facial (VII)', 'Glossofaríngeo (IX)'], c: 0, explica: 'Os músculos da mastigação são inervados pelo V3.' },
+  { d: 4, p: 'Na paralisia de Bell (lesão periférica do VII), o doente franze a testa do lado afectado?', o: ['Sim', 'Não'], c: 1, explica: 'Não: na lesão periférica fica paralisada toda a hemiface, testa incluída.' },
+  { d: 4, p: 'Numa lesão central do VII (por exemplo, um AVC), que região fica geralmente poupada?', o: ['A testa', 'A boca', 'A bochecha'], c: 0, explica: 'A testa, porque a sua parte do núcleo facial recebe fibras dos dois hemisférios.' },
+  { d: 4, p: 'Que músculo eleva a pálpebra superior?', o: ['Orbicular do olho', 'Levantador da pálpebra superior', 'Frontal'], c: 1, explica: 'O levantador da pálpebra superior, inervado pelo oculomotor (III).' },
+  { d: 4, p: 'Que nervo craniano inerva o recto lateral?', o: ['Troclear (IV)', 'Oculomotor (III)', 'Abducente (VI)'], c: 2, explica: 'O abducente (VI): sem ele o olho não vai para fora.' },
+  { d: 4, p: 'O nervo troclear (IV) inerva o…', o: ['Oblíquo superior', 'Recto inferior', 'Oblíquo inferior'], c: 0, explica: 'O oblíquo superior, cujo tendão passa pela tróclea — daí o nome do nervo.' },
+  { d: 4, p: 'Por baixo do ptério passa um ramo de que artéria?', o: ['Carótida interna', 'Meníngea média', 'Facial'], c: 1, explica: 'O ramo anterior da artéria meníngea média — fracturas aqui podem dar hematoma epidural.' },
+  { d: 4, p: 'Dor na tabaqueira anatómica após queda sobre a mão estendida sugere fractura do…', o: ['Escafóide', 'Rádio distal', '5.º metacarpo'], c: 0, explica: 'Escafóide — mesmo com radiografia inicial normal, deve ser valorizada.' },
+  { d: 4, p: 'A lesão do nervo radial no sulco do úmero provoca…', o: ['Mão em garra', 'Mão pendente', 'Mão de pregador'], c: 1, explica: 'Mão pendente (queda do punho), por paralisia dos extensores.' },
+  { d: 4, p: 'O nervo que dá "choque" quando batemos no cotovelo passa atrás do…', o: ['Epicôndilo medial', 'Epicôndilo lateral', 'Olecrânio'], c: 0, explica: 'É o nervo ulnar, atrás do epicôndilo medial.' },
+  { d: 4, p: 'Ptose com o olho "para baixo e para fora" sugere lesão do…', o: ['Abducente (VI)', 'Oculomotor (III)', 'Facial (VII)'], c: 1, explica: 'Do oculomotor (III): ficam a actuar só o recto lateral (VI) e o oblíquo superior (IV).' },
+  { d: 4, p: 'Que artéria se palpa habitualmente no pescoço para avaliar o pulso?', o: ['Vertebral', 'Subclávia', 'Carótida comum'], c: 2, explica: 'A carótida comum, à frente do esternocleidomastóideo.' },
+];

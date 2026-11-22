@@ -3,14 +3,14 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
 import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker, ObjectDetector } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
 import { CANON, MIRROR } from './canon.js';
-import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, LEVELS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural } from './parts.js';
+import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS } from './parts.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const BS_SWAP = false;
-const DEBUG = { bs: null, tip: null, hand: null, pose: null }; // usado nos testes automáticos
+const DEBUG = { bs: null, tip: null, hand: null, pose: null, gaze: null }; // usado nos testes automáticos
 const ARTIFACT = !!window.ESPELHO_ARTIFACT;           // versão publicada dentro do Claude (sem câmara)
 let capDownloads = null, capTTS = null;
 if (window.claude && typeof window.claude.use === 'function') {
@@ -48,7 +48,7 @@ async function loadModel(url, sha) {
 const DEFAULTS = {
   layers: { skull: true, teeth: true, spine: true, brain: false, eyes: true, muscles: false, hands: true, body: false },
   babyTeeth: false, level: 'exploradores',
-  objXray: true, objEN: false, objMov: false,
+  objXray: true, objEN: false, objMov: false, prog: { max: 1, best: {} }, unlockAll: false,
   labels: true, look: 'xray', bright: 1, realMe: 0.45, anat: 1,
   reveal: 'all', lens: 0.26, feather: 0.25,
   fit: { size: 1, w: 1, h: 1, d: 1, x: 0, y: 0, z: 0 },
@@ -1036,7 +1036,8 @@ function drawLabels(f, st) {
   const ctx = lctx;
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, lCanvas.width, lCanvas.height);
   const bOn = bodyRig?.on && S.layers.body;
-  if (!S.labels || (!f && !bOn) || mode === 'objectos') return;
+  const hideForQuiz = mode === 'desafio' && ch?.list && ch.phase === 'ask' && ch.list[ch.i]?.mostra;
+  if (!S.labels || (!f && !bOn) || mode === 'objectos' || hideForQuiz) return;
   const sc = lCanvas.width / vw; ctx.setTransform(sc, 0, 0, sc, 0, 0);
   let T = [...collectTargets(f), ...handTargets(), ...bodyTargets()].filter(t => !t.extra);
   // um rótulo por parte: o lado mais virado para a câmara
@@ -1187,17 +1188,12 @@ function setMode(m) {
     chooseLevel();
   }
 }
-function chooseLevel() {
-  const extra = sourceKind === 'video' ? ' (Num vídeo gravado só passa se lá estiverem as caretas certas!)' : '';
-  promptShow('⭐', `Desafio! ${TXT.escolheNivel}${extra}`, '', null, null, '',
-    Object.entries(LEVELS).map(([k, l]) => ({ html: `<b>${l.emoji}</b>${l.nome}<small>${l.idade}</small>`, on: () => { S.level = k; saveSettings(); startChallenge(); } })));
-  speak(`Desafio! ${TXT.desafioIntro} ${TXT.escolheNivel}`);
-}
 function promptShow(emoji, text, stars, btn, onBtn, cls = '', opts = null) {
   const p = $('#prompt');
   const po = p.querySelector('.p-opts');
   po.hidden = !opts; po.innerHTML = '';
-  if (opts) for (const o of opts) { const b = document.createElement('button'); b.innerHTML = o.html; b.onclick = o.on; po.appendChild(b); }
+  if (opts) for (const o of opts) { const b = document.createElement('button'); b.innerHTML = o.html; b.onclick = o.on; if (o.cls) b.className = o.cls; po.appendChild(b); }
+  p.querySelector('.p-timer').hidden = !cls.includes('timed');
   p.hidden = false; p.className = cls;
   p.querySelector('.p-emoji').textContent = emoji;
   p.querySelector('.p-text').textContent = text;
@@ -1205,50 +1201,157 @@ function promptShow(emoji, text, stars, btn, onBtn, cls = '', opts = null) {
   const b = p.querySelector('.p-btn');
   b.hidden = !btn; if (btn) { b.textContent = btn; b.onclick = onBtn; }
   p.classList.remove('pop'); void p.offsetWidth; p.classList.add('pop');
+  if (!quizEl.hidden) placeQuiz();
 }
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
-function startChallenge() {
-  const lvl = S.level in LEVELS ? S.level : 'exploradores';
-  const withBody = S.layers.body && bodyRig?.on;
-  const face = shuffle(CHALLENGES.filter(c => c.tipo === 'cara'));
-  const touch = shuffle(CHALLENGES.filter(c => c.tipo === 'toque'));
-  const bodyC = shuffle(BODY_CHALLENGES.slice());
-  let list = [];
-  if (lvl === 'pequeninos') {
-    list = face.slice(0, withBody ? 5 : 6);
-    if (withBody) list.splice(2, 0, BODY_CHALLENGES[0]);
-  } else if (lvl === 'exploradores') {
-    const t = touch.slice(0, 4), f = face.slice(0, 4);
-    if (withBody) { t[3] = bodyC.find(c => c.tipo === 'toque'); f[3] = BODY_CHALLENGES[0]; }
-    for (let i = 0; i < 4; i++) list.push(f[i], t[i]);
-  } else {
-    const q = shuffle(QUIZ.slice()).slice(0, 3).map(x => ({ tipo: 'quiz', q: x, pede: x.p, emoji: '❓', alvo: null }));
-    const t = touch.slice(0, 3), f = face.slice(0, 2);
-    if (withBody) t[2] = bodyC.find(c => c.tipo === 'toque');
-    list = [t[0], q[0], f[0], t[1], q[1], f[1], t[2], q[2]];
-  }
-  ch = { list: list.filter(Boolean), i: -1, stars: 0, phase: 'next', t: 0, hold: 0, lvl };
+// ---------- escada de 12 níveis
+const prog = () => (S.prog && S.prog.best ? S.prog : (S.prog = { max: 1, best: {} }));
+const levelUnlocked = n => !!S.unlockAll || n <= prog().max;
+function chooseLevel() {
+  if (sourceKind === 'image') { promptShow('🎥', 'O Desafio precisa de movimento: usa a câmara ou um vídeo.', '', null); return; }
+  const opts = LADDER.map((L, i) => {
+    const n = i + 1, ok = levelUnlocked(n), b = prog().best[n], e = ETAPAS[L.etapa];
+    return {
+      html: `<b>${ok ? n : '🔒'}</b><span>${e.emoji} ${L.titulo}</span><small>${b != null ? '⭐ ' + b + '/' + L.rondas : ok ? e.idade : 'trancado'}</small>`,
+      cls: ok ? '' : 'locked',
+      on: () => ok ? startLevel(n) : (toast('🔒 Ganha pelo menos 60% das estrelas no nível anterior para abrir este.', 3200), speak('Este nível ainda está trancado.')),
+    };
+  });
+  const extra = sourceKind === 'video' ? ' Num vídeo gravado só passa se lá estiverem as caretas certas!' : '';
+  promptShow('⭐', `Desafio! Escolhe o nível.${extra}`, '', null, null, 'levels', opts);
+  speak('Desafio! Escolhe o nível.');
+}
+function startLevel(n) {
+  const L = LADDER[n - 1];
+  S.layers.skull = true; S.layers.hands = true; refreshUI();
+  ch = { list: buildRounds(L), i: -1, stars: 0, phase: 'next', t: 0, hold: 0, n, L, lvl: L.cient ? 'cientistas' : 'base' };
+  if (n >= 10) toast('🩺 Treino de anatomia — não é um instrumento de diagnóstico.', 4500);
   nextRound();
 }
-const pedido = c => (ch?.lvl === 'cientistas' && c.pedeCient) ? c.pedeCient : c.pede;
+const FEM = new Set(['glabela', 'atm']);
+const ladoWord = (side, g) => side === 1 ? (g === 'f' ? 'esquerda' : 'esquerdo') : (g === 'f' ? 'direita' : 'direito');
+const mestreTxt = c => (c.pedeCient || c.pede).split(':')[0].replace(/[!.]?$/, '!');
+function buildRounds(L) {
+  const withBody = S.layers.body && bodyRig?.on;
+  const gens = L.mix.filter(([k]) => k !== 'corpo' || withBody);
+  const used = new Set(), out = [];
+  const pick = (arr, key) => { const free = arr.filter(x => !used.has(key(x))); const src = free.length ? free : arr; const x = src[Math.floor(Math.random() * src.length)]; used.add(key(x)); return x; };
+  const SIMPLE_C = ['mZigomatico', 'mandibula', 'mOrbBoca', 'mOrbOlho'], SIMPLE_T = ['nasal', 'mandibula', 'cranio', 'dentes'];
+  const nm = it => L.cient && it.cient ? it.cient : it.nome;
+  const make = ([k, arg]) => {
+    if (k === 'cara') {
+      const c = pick(CHALLENGES.filter(c => c.tipo === 'cara' && (arg !== 'simples' || SIMPLE_C.includes(c.alvo))), x => 'c' + x.alvo);
+      return { ...c, txt: L.mestre ? mestreTxt(c) : L.cient && c.pedeCient ? c.pedeCient : c.pede, key: 'c' + c.alvo };
+    }
+    if (k === 'toque') {
+      const c = pick(CHALLENGES.filter(c => c.tipo === 'toque' && (arg !== 'simples' || SIMPLE_T.includes(c.alvo))), x => 't' + x.alvo);
+      return { ...c, txt: L.cient && c.pedeCient ? c.pedeCient : c.pede, key: 't' + c.alvo };
+    }
+    if (k === 'lado') {
+      const t = pick(LADO, x => 'l' + x.alvo), side = Math.random() < 0.5 ? 1 : -1;
+      const txt = (L.cient ? t.cient : t.pede).replace('{lado}', ladoWord(side, L.cient ? t.gc : t.g));
+      return { tipo: 'toque', alvo: t.alvo, side, txt, emoji: side === 1 ? '👈' : '👉', ok: `Isso! Lado ${side === 1 ? 'esquerdo' : 'direito'} certinho.`, key: 'l' + t.alvo };
+    }
+    if (k === 'seq') {
+      const items = shuffle(SEQ_ITEMS.slice()).slice(0, arg);
+      return { tipo: 'seq', items, txt: 'Repete: ' + items.map(x => x.emoji).join(' → '), say: 'Repete: ' + items.map(x => x.nome).join(', depois '), emoji: '🧠', ok: 'Memória de campeão! Sequência completa.', key: 's' + Math.random() };
+    }
+    if (k === 'combo') { const c = pick(COMBOS, x => x.pede); return { tipo: 'cara', teste: c.teste, alvos: c.alvos, alvo: c.alvos[0], txt: c.pede, emoji: c.emoji, ok: c.ok, key: c.pede }; }
+    if (k === 'quiz') {
+      const q = pick(arg === 1 ? QUIZ : QUIZ_MAIS.filter(x => x.d === arg), x => x.p);
+      return { tipo: 'quiz', q, txt: q.p, emoji: arg >= 4 ? '🩺' : arg === 3 ? '🎓' : '❓', key: q.p };
+    }
+    if (k === 'qualOsso') {
+      const pool = PARTS.filter(p => ['skull', 'spine'].includes(p.layer));
+      const p = pick(pool, x => 'o' + x.id);
+      const opts = shuffle([p, ...shuffle(pool.filter(x => x !== p)).slice(0, 2)]);
+      return { tipo: 'quiz', mostra: p.id, mostraKind: 'part', q: { p: 'Que osso é este?', o: opts.map(nm), c: opts.indexOf(p), explica: p.facto }, txt: 'Que osso está no círculo verde? Aponta para a resposta.', emoji: '🦴', key: 'o' + p.id };
+    }
+    if (k === 'qualMusculo') {
+      const m = pick(MUSCLES, x => 'm' + x.id);
+      const opts = shuffle([m, ...shuffle(MUSCLES.filter(x => x !== m)).slice(0, 2)]);
+      return { tipo: 'quiz', mostra: m.id, mostraKind: 'muscle', alvo: m.id, q: { p: 'Que músculo é este?', o: opts.map(x => x.cient), c: opts.indexOf(m), explica: m.facto }, txt: 'Que músculo está a brilhar? Aponta para a resposta.', emoji: '💪', key: 'm' + m.id };
+    }
+    if (k === 'marco') {
+      const lm = pick(LANDMARKS, x => 'k' + x.id), side = lm.par ? (Math.random() < 0.5 ? 1 : -1) : null;
+      const art = FEM.has(lm.id) ? 'na tua' : 'no teu';
+      return { tipo: 'toque', marco: true, alvo: lm.id, side, txt: `Toca ${art} ${lm.nome}${side ? ' ' + ladoWord(side, lm.g) : ''}!`, emoji: '📍', ok: 'Certo! ' + lm.facto, key: 'k' + lm.id };
+    }
+    if (k === 'clinico') { const c = pick(CLINICAL, x => x.pede); return { tipo: 'cara', teste: c.teste, alvos: c.alvos, alvo: c.alvos[0], hold: c.hold, txt: c.pede, emoji: c.emoji, ok: c.ok, key: c.pede }; }
+    if (k === 'olhar') { const g = pick(GAZE, x => x.dir); return { tipo: 'olhar', dir: g.dir, txt: g.pede, emoji: g.emoji, ok: g.ok, key: 'g' + g.dir }; }
+    if (k === 'corpo') { const c = pick(BODY_CHALLENGES, x => x.alvo); return { ...c, corpo: c.tipo === 'toque' || c.corpo, txt: L.cient && c.pedeCient ? c.pedeCient : c.pede, key: 'b' + c.alvo }; }
+    return null;
+  };
+  const order = shuffle(gens.slice());
+  for (let i = 0; i < L.rondas; i++) {
+    let r = make(order[i % order.length]);
+    if (r && out.length && out[out.length - 1].key === r.key) r = make(order[i % order.length]);
+    if (r) out.push(r);
+  }
+  return out;
+}
+const pedido = c => c.txt || c.pede;
 function starsStr() { return '⭐'.repeat(ch.stars) + '☆'.repeat(ch.list.length - ch.stars); }
 function nextRound() {
-  ch.i++; ch.hold = 0; ch.t = performance.now();
+  ch.i++; ch.hold = 0; ch.seqI = 0; ch.g0 = null; ch.t = performance.now();
   if (ch.i >= ch.list.length) {
-    ch.phase = 'end';
-    const msg = ch.stars === ch.list.length ? `Incrível! Fizeste tudo! ${ch.stars} estrelas!` : `Fizeste ${ch.stars} de ${ch.list.length}! Muito bem!`;
-    hideQuiz();
-    promptShow('🏆', msg, starsStr(), null, null, 'ok', [
-      { html: '<b>🔁</b>Jogar outra vez', on: startChallenge },
-      { html: '<b>🎚️</b>Mudar de nível', on: chooseLevel }]);
-    speak(msg); confetti(vw / 2, vh * 0.35, 160); sndOk();
+    ch.phase = 'end'; hideQuiz();
+    const n = ch.n, need = Math.ceil(ch.list.length * 0.6), pass = ch.stars >= need, P = prog();
+    P.best[n] = Math.max(P.best[n] || 0, ch.stars);
+    let msg = ch.stars === ch.list.length ? `Perfeito! ${ch.stars} estrelas no nível ${n}!` : `Nível ${n}: ${ch.stars} de ${ch.list.length} estrelas.`;
+    if (pass && n < LADDER.length) { if (P.max <= n) { P.max = n + 1; msg += ` Desbloqueaste o nível ${n + 1}! 🔓`; } }
+    else if (pass && n === LADDER.length) msg += ' És um mestre do raio-X! 🩺🏆';
+    else msg += ` Precisas de ${need} estrelas para abrir o nível seguinte. Tenta outra vez!`;
+    saveSettings();
+    const opts = [];
+    if (n < LADDER.length && levelUnlocked(n + 1)) opts.push({ html: `<b>▶</b>Nível ${n + 1}`, on: () => startLevel(n + 1) });
+    opts.push({ html: '<b>🔁</b>Repetir', on: () => startLevel(n) }, { html: '<b>🎚️</b>Níveis', on: chooseLevel });
+    promptShow(pass ? '🏆' : '💪', msg, starsStr(), null, null, pass ? 'ok' : '', opts);
+    speak(msg.replace(/[🔓🩺🏆]/gu, '')); if (pass) { confetti(vw / 2, vh * 0.35, 160); sndOk(); }
     return;
   }
   ch.phase = 'ask';
   const c = ch.list[ch.i];
-  if (c.tipo === 'quiz') showQuiz(c.q); else hideQuiz();
-  promptShow(c.emoji, pedido(c), starsStr(), null);
-  speak(pedido(c));
+  hideQuiz();
+  promptShow(c.emoji, pedido(c), starsStr(), null, null, 'timed', [{ html: '⏭️ Saltar', on: () => { if (ch?.phase === 'ask') { ch.phase = 'skip'; ch.t = performance.now(); ch.skipSaid = false; } } }]);
+  if (c.tipo === 'quiz') showQuiz(c.q);
+  speak(c.say || pedido(c));
+}
+// direcção do olhar a partir da íris (referencial local da cabeça: x = esquerda da pessoa, y = cima)
+function toLocal(p, i, lm) {
+  const wx = lm[i * 3] - p.C.x, wy = -lm[i * 3 + 1] - p.C.y, wz = -lm[i * 3 + 2] - p.C.z;
+  return [(wx * p.X.x + wy * p.X.y + wz * p.X.z) / p.kx, (wx * p.Y.x + wy * p.Y.y + wz * p.Y.z) / p.ky];
+}
+function gazeOf(f) {
+  const p = f.pose, lm = f.lm;
+  const irisA = toLocal(p, 468, lm), irisB = toLocal(p, 473, lm);
+  const eyes = [[33, 133], [263, 362]].map(([o, i]) => { const a = toLocal(p, o, lm), b = toLocal(p, i, lm); return { cx: (a[0] + b[0]) / 2, cy: (a[1] + b[1]) / 2, w: Math.abs(a[0] - b[0]) || 1 }; });
+  let gx = 0, gy = 0;
+  for (const ir of [irisA, irisB]) { const e = ir[0] < 0 ? eyes[0] : eyes[1]; gx += (ir[0] - e.cx) / e.w / 2; gy += (ir[1] - e.cy) / e.w / 2; }
+  return { gx, gy };
+}
+// relativo à posição de partida (quem olha para um portátil já tem os olhos um pouco para baixo)
+function gazeNow(f) {
+  const g = gazeOf(f), b = f.bs;
+  return { gx: g.gx, gy: g.gy, up: ((b.eyeLookUpLeft || 0) + (b.eyeLookUpRight || 0)) / 2, dn: ((b.eyeLookDownLeft || 0) + (b.eyeLookDownRight || 0)) / 2 };
+}
+function gazeOk(f, dir, g0) {
+  if (DEBUG.gaze) return DEBUG.gaze === dir;
+  const g = gazeNow(f), z = g0 || { gx: 0, gy: 0, up: 0, dn: 0 };
+  if (dir === 'esq') return g.gx - z.gx > 0.09;
+  if (dir === 'dir') return g.gx - z.gx < -0.09;
+  if (dir === 'cima') return g.gy - z.gy > 0.05 || (g.up - z.up > 0.3 && g.up > 0.45);
+  return z.gy - g.gy > 0.045 || (g.dn - z.dn > 0.25 && g.dn > 0.55);
+}
+function landmarkTargets(f, id, side) {
+  const out = []; if (!f || !f.rig) return out;
+  const lm = LANDMARKS.find(x => x.id === id); if (!lm) return out;
+  for (const s of lm.par ? [1, -1] : [1]) {
+    if (side != null && lm.par && s !== side) continue;
+    const [x, y] = projRig(f.rig, lm.a[0] * s, lm.a[1], lm.a[2], lm.jaw ? f.rig.jawAngle : null);
+    out.push({ kind: 'part', id, x, y, fc: 1, side: s });
+  }
+  return out;
 }
 // ---------- quiz (responde com o dedo ou com um clique)
 const quizEl = $('#quiz');
@@ -1256,6 +1359,13 @@ function showQuiz(q) {
   quizEl.hidden = false;
   quizEl.innerHTML = q.o.map((o, i) => `<button data-i="${i}"><span class="fill"></span>${o}</button>`).join('');
   quizEl.dwell = { i: -1, t: 0 };
+  placeQuiz();
+}
+function placeQuiz() {
+  const pr = $('#prompt');
+  if (matchMedia('(max-width: 700px)').matches) { quizEl.style.top = 'auto'; quizEl.style.bottom = pr.hidden ? '8px' : `${innerHeight - pr.getBoundingClientRect().top + 8}px`; return; }
+  quizEl.style.bottom = '';
+  quizEl.style.top = pr.hidden ? '' : `${Math.max(pr.offsetTop + pr.offsetHeight + 14, quizEl.parentElement.clientHeight * 0.24)}px`;
 }
 function hideQuiz() { quizEl.hidden = true; quizEl.innerHTML = ''; }
 quizEl.addEventListener('click', e => { const b = e.target.closest('button'); if (b) answerQuiz(+b.dataset.i); });
@@ -1314,14 +1424,33 @@ function updateInteraction(f0, dt, now) {
     } else { dwell.id = null; dwell.t = 0; if (dwell.last && now - dwell.lastAt > 1200) dwell.last = null; }
   }
 
-  if (mode === 'desafio' && ch) {
+  if (mode === 'desafio' && ch && ch.list) {
     const c = ch.list[ch.i];
     const el = (now - ch.t) / 1000;
     if (ch.phase === 'ask' && c) {
+      const limit = (ch.L?.tempo || 25) + (c.tipo === 'quiz' ? 12 : c.tipo === 'seq' ? 10 : 0);
+      const bar = $('#prompt .p-timer i'); if (bar) bar.style.width = `${clamp(100 - el / limit * 100, 0, 100)}%`;
+      const hintAfter = (ch.n || 1) >= 10 ? 12 : 7;
       if (c.tipo === 'cara' && f0) {
         const ok = c.teste(f0.bs, { mastigar: f0.chew });
         ch.hold = ok ? ch.hold + dt : Math.max(0, ch.hold - dt * 2);
-        if (ch.hold > (c.alvo === 'mMasseter' ? 0.8 : 0.35)) roundOk(vw - f0.lm[1 * 3], f0.lm[1 * 3 + 1] - f0.faceW * 0.6);
+        if (ch.hold > (c.hold || (c.alvo === 'mMasseter' ? 0.8 : 0.35))) roundOk(vw - f0.lm[1 * 3], f0.lm[1 * 3 + 1] - f0.faceW * 0.6);
+      } else if (c.tipo === 'seq' && f0) {
+        const it = c.items[ch.seqI];
+        ch.hold = it.teste(f0.bs) ? ch.hold + dt : Math.max(0, ch.hold - dt * 2);
+        if (ch.hold > 0.3) {
+          ch.seqI++; ch.hold = 0; sndTick();
+          $('#prompt .p-text').textContent = 'Repete: ' + c.items.map((x, k) => k < ch.seqI ? '✅' : x.emoji).join(' → ');
+          if (ch.seqI >= c.items.length) roundOk(vw - f0.lm[3], f0.lm[4] - f0.faceW * 0.6);
+        }
+      } else if (c.tipo === 'olhar' && f0) {
+        if (el < 0.7 || !ch.g0) {
+          const g = gazeNow(f0);
+          ch.g0 = ch.g0 ? Object.fromEntries(Object.keys(g).map(k => [k, lerp(ch.g0[k], g[k], 0.25)])) : g;
+        }
+        const ok = el >= 0.7 && gazeOk(f0, c.dir, ch.g0);
+        ch.hold = ok ? ch.hold + dt : Math.max(0, ch.hold - dt * 2);
+        if (ch.hold > 0.4) roundOk(vw - f0.lm[3], f0.lm[4] - f0.faceW * 0.6);
       } else if (c.tipo === 'corpo') {
         const v = body.vis, l = body.lm;
         const ok = body.active && l && v[15] > VIS && v[16] > VIS && l[15 * 3 + 1] < l[1] && l[16 * 3 + 1] < l[1];
@@ -1329,7 +1458,13 @@ function updateInteraction(f0, dt, now) {
         if (ok && ch.hold > 0.4) roundOk(vw - l[0], l[1] - body.w * 0.5);
         if (!body.active && el > 4) $('#hint').textContent = TXT.semCorpo;
       } else if (c.tipo === 'quiz') {
-        // apontar com o dedo para uma das respostas
+        if (c.mostra) {
+          selected = { id: c.mostra, until: now + 400 };
+          let anchors = [];
+          if (c.mostraKind === 'part') anchors = collectTargets(f0, { all: true }).filter(t => t.id === c.mostra && t.kind === 'part' && !t.extra);
+          else if (f0?.mgeo) anchors = Object.entries(f0.mgeo).filter(([k]) => k.startsWith(c.mostra)).map(([, g]) => ({ x: g.c[0], y: g.c[1] }));
+          fxDraw.hintAt = anchors;
+        }
         const sr = stage.getBoundingClientRect();
         let hot = -1;
         const btns = [...quizEl.querySelectorAll('button')];
@@ -1342,21 +1477,22 @@ function updateInteraction(f0, dt, now) {
         btns.forEach((b, k) => { b.classList.toggle('hot', k === d.i); b.querySelector('.fill').style.transform = `scaleX(${k === d.i ? clamp(d.t / 0.9, 0, 1) : 0})`; });
         if (d.i >= 0 && d.t > 0.9) { const k = d.i; d.i = -1; answerQuiz(k); }
       } else if (c.tipo === 'toque' && (f0 || c.corpo)) {
-        const targets = (c.corpo ? bodyTargets({ all: true }) : collectTargets(f0, { all: true, touch: true })).filter(t => t.id === c.alvo && (t.kind === 'part' || t.kind === 'body'));
-        const hit = nearestTarget(tips, targets, R * 1.15);
+        let targets;
+        if (c.marco) targets = landmarkTargets(f0, c.alvo, c.side);
+        else if (c.corpo) targets = bodyTargets({ all: true }).filter(t => t.id === c.alvo);
+        else targets = collectTargets(f0, { all: true, touch: true }).filter(t => t.id === c.alvo && t.kind === 'part' && (c.side == null || (t.side === c.side && !t.extra)));
+        const hit = nearestTarget(tips, targets, R * (c.marco ? 1.0 : 1.15));
         if (hit) { ch.hold += dt; fxDraw.progress = { x: hit.tip[0], y: hit.tip[1], p: clamp(ch.hold / 0.45, 0, 1) }; }
         else ch.hold = Math.max(0, ch.hold - dt);
         if (hit && ch.hold > 0.45) roundOk(vw - hit.tip[0], hit.tip[1]);
-        if (el > 7) fxDraw.hintAt = targets;
+        if (el > hintAfter) fxDraw.hintAt = targets;
         if (!tips.length && noHandSince && now - noHandSince > 3500) $('#hint').textContent = TXT.semMao;
       }
-      const limit = c.tipo === 'quiz' ? 40 : ch.lvl === 'pequeninos' ? 32 : 25;
-      if (el > limit && ch.phase === 'ask') {
-        ch.phase = 'skip'; ch.t = now;
-        promptShow('🙂', 'Esta era difícil! Vamos tentar outra.', starsStr(), null);
-        speak('Esta era difícil! Vamos tentar outra.');
-      }
-    } else if ((ch.phase === 'ok' && el > (ch.list[ch.i]?.tipo === 'quiz' ? 5.5 : 3.2)) || (ch.phase === 'skip' && el > 2.2)) nextRound();
+      if (el > limit && ch.phase === 'ask') { ch.phase = 'skip'; ch.t = now; ch.skipSaid = false; }
+    } else if (ch.phase === 'skip') {
+      if (!ch.skipSaid) { ch.skipSaid = true; ch.t = now; promptShow('🙂', 'Esta fica para a próxima! Vamos à seguinte.', starsStr(), null); speak('Esta fica para a próxima!'); hideQuiz(); }
+      else if (el > 1.8) nextRound();
+    } else if (ch.phase === 'ok' && el > (c?.tipo === 'quiz' ? 5.5 : 3.2)) nextRound();
   }
 
   // dica de músculo em acção (modo explorar)
@@ -1767,7 +1903,8 @@ function frame(nowMs) {
 
   // músculos
   mctx.clearRect(0, 0, vw, vh);
-  const forced = mode === 'desafio' && ch && ch.phase !== 'end' ? [ch.list[ch.i]?.alvo, ch.list[ch.i]?.alvo === 'mMasseter' ? 'mTemporal' : null].filter(Boolean) : null;
+  const cr = mode === 'desafio' && ch && ch.list && ch.phase !== 'end' ? ch.list[ch.i] : null;
+  const forced = cr ? [...(cr.alvos || [cr.alvo]), cr.alvo === 'mMasseter' || (cr.alvos || []).includes('mMasseter') ? 'mTemporal' : null].filter(Boolean) : null;
   for (const f of faces) if (f.active && f.lm) {
     if (S.layers.muscles) drawMuscles(f, t);
     else { f.mgeo = null; if (forced && f === f0 && MUSCLES.some(m => forced.includes(m.id))) drawMuscles(f, t, forced); }
@@ -1919,7 +2056,8 @@ function initUI() {
     if (seg.dataset.set === 'look') applyLook();
     refreshUI();
   });
-  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); });
+  $('#btnProgReset').onclick = () => { S.prog = { max: 1, best: {} }; saveSettings(); toast('Progresso do Desafio recomeçado.'); if (mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); };
+  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); if (el.dataset.set === 'unlockAll' && mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); });
   $$('[data-fit]').forEach(b => b.onclick = () => { S.fit = { ...FIT_PRESETS[b.dataset.fit] }; S.babyTeeth = b.dataset.fit === 'crianca'; refreshUI(); });
   $('#btnFitReset').onclick = () => { S.fit = { ...FIT_PRESETS.adulto }; refreshUI(); };
   $$('.modes button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
@@ -2052,4 +2190,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { S, faces, hands, body, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, toggleRec };
+window.espelho = { S, faces, hands, body, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };

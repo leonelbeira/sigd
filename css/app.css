@@ -177,3 +177,36 @@ input[type=range] { width: 100%; accent-color: var(--cyan); height: 28px; }
 /* modo objectos */
 #objSummary { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: 92%; border: 2px solid #6fe3ff88; background: #0b1730e6; color: var(--ink);
   border-radius: 999px; padding: 8px 18px; font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 8px 24px #000a; }
+
+/* escada de níveis */
+.p-timer { height: 5px; border-radius: 3px; background: rgba(255,255,255,.12); margin-top: 6px; overflow: hidden; }
+.p-timer i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #ff7a7a, #ffd166 40%, #7dffa8); transition: width .25s linear; }
+#prompt.timed .p-opts button { min-height: 0; padding: 4px 12px; font-size: 14px; opacity: .8; }
+#prompt.levels { max-width: min(96vw, 860px); }
+#prompt.levels .p-opts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; }
+#prompt.levels .p-opts button { min-height: 76px; padding: 6px 8px; gap: 2px; text-align: center; }
+#prompt.levels .p-opts button span { font-size: 14px; line-height: 1.15; }
+#prompt.levels .p-opts button b { font-size: 22px; }
+#prompt.levels .p-opts button.locked { opacity: .45; filter: grayscale(.7); }
+@media (max-width: 640px) { #prompt.levels .p-opts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+#prompt.timed:has(.p-opts:not([hidden])) { flex-wrap: nowrap; justify-content: flex-start; }
+#prompt.timed .p-body { flex: 1; min-width: 0; }
+#prompt.timed .p-opts { flex: 0 0 auto; }
+#toast { max-width: 92%; white-space: normal; text-align: center; }
+@media (max-width: 700px) {
+  #prompt.levels { position: fixed; top: 8px; z-index: 30; width: 96vw; max-width: 96vw; max-height: 94vh; overflow-y: auto; }
+  #prompt.levels .p-opts button { min-height: 64px; }
+  #prompt { padding: 8px 10px; gap: 8px; max-width: 96%; }
+  .p-emoji { font-size: 30px; }
+  .p-text { font-size: 16px; }
+  .p-stars { font-size: 13px; letter-spacing: 0; }
+  #prompt.timed:has(.p-opts:not([hidden])) { flex-wrap: wrap; justify-content: center; }
+  #quiz { gap: 6px; }
+  #quiz button { min-height: 56px; padding: 8px 6px; font-size: 14px; border-radius: 14px; }
+  #toast { font-size: 14px; padding: 6px 10px; }
+}
+@media (max-width: 700px) {
+  #prompt:not(.levels) { position: fixed; top: auto; bottom: 8px; width: 96vw; max-width: 96vw; z-index: 25; }
+  #quiz { position: fixed; width: 96vw; z-index: 25; }
+}
+#toast { width: max-content; }
