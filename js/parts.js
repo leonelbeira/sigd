@@ -188,7 +188,7 @@ export const TXT = {
   tocaIntro: 'Aponta com o dedo para uma parte da tua cara e espera um bocadinho!',
   desafioIntro: 'Vou pedir-te coisas. Consegues fazer todas?',
   aTrabalhar: 'a trabalhar!',
-  semCorpo: 'Afasta-te um pouco para a câmara ver os teus ombros 🙆',
+  semCorpo: 'Para o esqueleto do corpo, a câmara tem de ver a tua cabeça e os ombros: afasta-te um pouco 🙆',
   escolheNivel: 'Escolhe o teu nível:',
   objIntro: 'Mostra um objecto à câmara: uma fruta, um brinquedo, uma caneca…',
   objNada: 'Ainda não vejo nenhum objecto. Mostra-me um de perto! 🍌🧸📱',

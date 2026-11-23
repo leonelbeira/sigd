@@ -268,7 +268,7 @@ function makeHandRig() {
   return { g, bones, carpals };
 }
 
-let headRigs = [], handRigs = [], bodyRig = null;
+let headRigs = [], handRigs = [], bodyRig = null, poseHeadRigs = [];
 
 // ================================================================== CORPO (esqueleto com o tracking do corpo)
 // Referencial do tronco (cm): origem a meio dos ombros, x = esquerda da pessoa, y = cima, z = frente; ombros em x = ±18.
@@ -417,7 +417,7 @@ function ensurePose() {
   poseLoading = (async () => {
     toast('🩻 A preparar o esqueleto do corpo…', 2200);
     const buf = await loadModel(CFG.poseModel, CFG.checkSha === false ? null : MODEL_SHA.pose);
-    poseLM = await mkTask(PoseLandmarker, { baseOptions: { modelAssetBuffer: buf }, runningMode: 'VIDEO', numPoses: 1,
+    poseLM = await mkTask(PoseLandmarker, { baseOptions: { modelAssetBuffer: buf }, runningMode: 'VIDEO', numPoses: 2,
       minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
   })().catch(e => { console.error(e); toast('Não consegui carregar o modelo do corpo.'); poseLoading = null; });
 }
@@ -465,7 +465,9 @@ function makeFaceSlot(i) {
 }
 function makeHandSlot(i) { return { i, active: false, lost: 0, filt: new OneEuro(21 * 3, 1.6, 0.02), lm: null, rig: null, J: Array.from({ length: 21 }, V), hs: 1 }; }
 const faces = [makeFaceSlot(0), makeFaceSlot(1)];
-const body = { active: false, lost: 0, filt: new OneEuro(33 * 3, 1.3, 0.015), lm: null, vis: new Float32Array(33), J: Array.from({ length: 33 }, () => new THREE.Vector3()), w: 1 };
+function makeBodySlot(i) { return { i, active: false, lost: 0, filt: new OneEuro(33 * 3, 1.3, 0.015), lm: null, vis: new Float32Array(33), J: Array.from({ length: 33 }, V), w: 1, rig: null, head: null }; }
+const bodies = [makeBodySlot(0), makeBodySlot(1)];   // até duas pessoas de corpo inteiro
+let body = bodies[0];                                 // a pessoa principal (a maior)
 const hands = [makeHandSlot(0), makeHandSlot(1)];
 
 function assignSlots(slots, items, keyFn, t) {
@@ -625,15 +627,19 @@ function detect(now) {
   if (needPose) ensurePose();
   if (poseLM && needPose && !(handSkip && frameN % 2 === 0)) {
     const pr = poseLM.detectForVideo(source, ts);
-    const l = DEBUG.pose ? DEBUG.pose.map(([x, y, z, v = 1]) => ({ x: x / vw, y: y / vh, z: z / vw, visibility: v })) : pr.landmarks?.[0];
-    if (l) {
-      const raw = new Float32Array(99);
-      for (let i = 0; i < 33; i++) { raw[i * 3] = l[i].x * vw; raw[i * 3 + 1] = l[i].y * vh; raw[i * 3 + 2] = l[i].z * vw; body.vis[i] = lerp(body.vis[i], l[i].visibility ?? 1, 0.5); }
-      if (!body.active) body.filt.reset();
-      body.lm = body.filt.filter(raw, t); body.active = true; body.lost = 0;
-      for (let i = 0; i < 33; i++) body.J[i].set(body.lm[i * 3], -body.lm[i * 3 + 1], -body.lm[i * 3 + 2]);
-    } else if (++body.lost > 10) body.active = false;
-  } else if (!needPose) body.active = false;
+    const ls = DEBUG.pose ? [DEBUG.pose.map(([x, y, z, v = 1]) => ({ x: x / vw, y: y / vh, z: z / vw, visibility: v }))] : (pr.landmarks || []);
+    const items = ls.map(l => {
+      const raw = new Float32Array(99), v = new Float32Array(33);
+      for (let i = 0; i < 33; i++) { raw[i * 3] = l[i].x * vw; raw[i * 3 + 1] = l[i].y * vh; raw[i * 3 + 2] = l[i].z * vw; v[i] = l[i].visibility ?? 1; }
+      return { raw, v };
+    });
+    for (const [b, it] of assignSlots(bodies, items, r => [(r[33] + r[36]) / 2, (r[34] + r[37]) / 2], t)) {
+      for (let i = 0; i < 33; i++) b.vis[i] = lerp(b.vis[i], it.v[i], 0.5);
+      b.lm = b.filt.filter(it.raw, t);
+      for (let i = 0; i < 33; i++) b.J[i].set(b.lm[i * 3], -b.lm[i * 3 + 1], -b.lm[i * 3 + 2]);
+    }
+    for (const b of bodies) if (b.active && b.lost > 10) b.active = false;
+  } else if (!needPose) bodies.forEach(b => (b.active = false));
   return true;
 }
 
@@ -655,7 +661,8 @@ function updateHead(f) {
   r.jaw.rotation.x = r.jawAngle;
   // olhos seguem a íris (pontos 468 e 473)
   const inv = m4.copy(r.g.matrix).invert();
-  for (const ii of [468, 473]) {
+  if (!f.lm) r.eyes.forEach(e => e.quaternion.identity());
+  else for (const ii of [468, 473]) {
     const v = new THREE.Vector3(f.lm[ii * 3], -f.lm[ii * 3 + 1], -f.lm[ii * 3 + 2]).applyMatrix4(inv);
     const e = v.x < 0 ? 0 : 1;
     const d = v.sub(EYE_C[e]); d.z = Math.max(d.z, 0.6); d.normalize();
@@ -678,8 +685,8 @@ function handPoint(h, key, out) {
 }
 const hq = new THREE.Quaternion();
 const VIS = 0.5;
-function updateBody() {
-  const b = bodyRig, J = body.J, vis = body.vis;
+function updateBody(body) {
+  const b = body.rig, J = body.J, vis = body.vis;
   const on = body.active && (S.layers.body || (mode === 'desafio' && ch?.list[ch.i]?.corpo)) && vis[11] > VIS && vis[12] > VIS;
   b.torso.visible = b.pelvis.visible = b.limbs.visible = on;
   b.on = on;
@@ -727,23 +734,54 @@ function updateBody() {
     const s = 0.035 * w; m.position.copy(J[kn]).addScaledVector(b.Z, s * 0.8); m.scale.set(s, s * 1.2, s * 0.6);
   });
 }
-function torsoPt(x, y, z) {
-  const b = bodyRig; tmpV.set(x, y, z).applyMatrix4(b.torso.matrix); return [tmpV.x, -tmpV.y];
+// caveira estimada pelo corpo: quando a pessoa está longe de mais para o modelo da cara (de pé, a 2–3 m)
+const PH_EYE = [1.04, 6.13], PH_EYE_D = 6.32, PH_EAR_D = 15.32;   // olhos e orelhas no referencial da cabeça (cm), do modelo canónico
+function updatePoseHead(b) {
+  const r = b.head; if (!r) return;
+  const J = b.J, v = b.vis;
+  const ok = b.rig?.on && S.layers.skull && v[0] > VIS && v[2] > VIS && v[5] > VIS && (v[7] > 0.3 || v[8] > 0.3)
+    && J[0].y < 0 && -J[0].y < vh * 0.98;
+  if (!ok) { r.g.visible = false; b.hf = null; return; }
+  const earD = J[7].distanceTo(J[8]), eyeD = J[2].distanceTo(J[5]);
+  if (faces.some(f => f.active && f.lm && Math.hypot(f.lm[3] - b.lm[0], f.lm[4] - b.lm[1]) < Math.max(earD, b.w * 0.4))) { r.g.visible = false; b.hf = null; return; }
+  const hf = b.hf || (b.hf = { pose: { C: V(), X: V(), Y: V(), Z: V(), kx: 1, ky: 1, kz: 1 }, bs: {}, lm: null, rig: r, fresh: true });
+  const p = hf.pose;
+  const X = hv[0].subVectors(J[7], J[8]); X.normalize();
+  const Y = hv[1];
+  if (v[9] > VIS && v[10] > VIS) Y.addVectors(J[2], J[5]).multiplyScalar(0.5).sub(hv[2].addVectors(J[9], J[10]).multiplyScalar(0.5));
+  else Y.copy(b.rig.Y);
+  Y.addScaledVector(X, -Y.dot(X)).normalize();
+  const k = clamp(Math.max(eyeD / PH_EYE_D, earD / PH_EAR_D), b.rig.k * 0.75, b.rig.k * 1.7);
+  const C = hv[3].addVectors(J[2], J[5]).multiplyScalar(0.5);   // âncora nos olhos (mais fiáveis que as orelhas, muitas vezes tapadas pelo cabelo)
+  const Z = hv[4].crossVectors(X, Y);
+  C.addScaledVector(Y, -PH_EYE[0] * k).addScaledVector(Z, -PH_EYE[1] * k);
+  const a = hf.fresh ? 1 : 0.35; hf.fresh = false;
+  p.C.lerp(C, a); p.X.lerp(X, a).normalize(); p.Y.lerp(Y, a); p.Y.addScaledVector(p.X, -p.Y.dot(p.X)).normalize(); p.Z.crossVectors(p.X, p.Y);
+  p.kx = p.ky = p.kz = lerp(p.kx, k, a);
+  updateHead(hf);
+}
+function torsoPt(b, x, y, z) {
+  tmpV.set(x, y, z).applyMatrix4(b.torso.matrix); return [tmpV.x, -tmpV.y];
 }
 function bodyTargets(opts = {}) {
-  const b = bodyRig, out = [];
-  if (!b || !b.on || (!S.layers.body && !opts.all)) return out;
+  const out = [];
+  for (const bd of bodies) if (bd.rig?.on) bodyTargetsOf(bd, opts, out);
+  return out;
+}
+function bodyTargetsOf(body, opts, out) {
+  const b = body.rig;
+  if (!S.layers.body && !opts.all) return out;
   const J = body.J, vis = body.vis, P = BODY_PARTS;
   const get = id => P.find(p => p.id === id);
   const add = (id, xy, fc = 1) => { if (xy[0] > 0 && xy[0] < vw && xy[1] > 0 && xy[1] < vh) out.push({ kind: 'body', item: get(id), id, x: xy[0], y: xy[1], fc, layer: 'body' }); };
   for (const s of [1, -1]) {
     const fc = 0.6 + 0.4 * s * b.X.z;
-    add('costelas', torsoPt(s * 12.6, -14, 4.5), fc);
-    add('clavicula', torsoPt(s * 9, -1.8, 6.5), fc);
-    add('omoplata', torsoPt(s * 11.5, -9, -8.5), fc - 0.3);
+    add('costelas', torsoPt(b, s * 12.6, -14, 4.5), fc);
+    add('clavicula', torsoPt(b, s * 9, -1.8, 6.5), fc);
+    add('omoplata', torsoPt(b, s * 11.5, -9, -8.5), fc - 0.3);
   }
-  add('esterno', torsoPt(0, -12, 8.6)); add('esterno', torsoPt(0, -5, 7.0), 0.9);
-  add('coluna', torsoPt(0, -33, -3.5), 0.9);
+  add('esterno', torsoPt(b, 0, -12, 8.6)); add('esterno', torsoPt(b, 0, -5, 7.0), 0.9);
+  add('coluna', torsoPt(b, 0, -33, -3.5), 0.9);
   if (b.hasHips) { const hp = b.hip; tmpV.set(12 * hp.k, 0, 0); const p = hv[7].copy(hp.C).addScaledVector(hp.X, 12 * hp.k).addScaledVector(b.Y, 8 * hp.k); add('bacia', [p.x, -p.y]); }
   const mid = (a, c) => [(body.lm[a * 3] + body.lm[c * 3]) / 2, (body.lm[a * 3 + 1] + body.lm[c * 3 + 1]) / 2];
   for (const [a, c, id] of [[11, 13, 'umero'], [12, 14, 'umero'], [13, 15, 'antebracoC'], [14, 16, 'antebracoC'], [23, 25, 'femur'], [24, 26, 'femur'], [25, 27, 'tibia'], [26, 28, 'tibia']])
@@ -755,11 +793,12 @@ function updateHand(h) {
   const r = h.rig, hs = h.hs;
   r.g.visible = S.layers.hands;
   if (!S.layers.hands) return;
+  const armDrawn = bodies.some(b => b.rig?.on && [15, 16].some(w => b.vis[w] > VIS && Math.hypot(h.lm[0] - b.lm[w * 3], h.lm[1] - b.lm[w * 3 + 1]) < vw * 0.12));
   HAND_BONES.forEach(([a, b, rad, endGap = 0.07], i) => {
     const A = handPoint(h, a, hv[0]), B = handPoint(h, b, hv[1]);
     const d = hv[2].subVectors(B, A); const len = d.length(); if (len < 1e-3) return; d.divideScalar(len);
     const m = r.bones[i];
-    m.visible = !(i >= HAND_BONES.length - 2 && body.active && S.layers.body);
+    m.visible = !(i >= HAND_BONES.length - 2 && armDrawn);
     m.position.copy(A).addScaledVector(d, len * 0.07);
     m.quaternion.setFromUnitVectors(UP, d);
     const rr = rad * hs;
@@ -1404,7 +1443,7 @@ function nearestTarget(tips, targets, radius) {
   }
   return best;
 }
-let noHandSince = 0;
+let noHandSince = 0, bodyMiss = 0, bodyToastT = 0;
 function updateInteraction(f0, dt, now) {
   const tips = fingerTips();
   if (!tips.length) { if (!noHandSince) noHandSince = now; } else noHandSince = 0;
@@ -1898,7 +1937,13 @@ function frame(nowMs) {
     if (!h.rig) h.rig = handRigs[i];
     if (h.active && h.lm) updateHand(h); else h.rig.g.visible = false;
   });
-  updateBody();
+  bodies.forEach((b, i) => { if (!b.rig) { b.rig = i ? makeBodyRig() : bodyRig; b.head = poseHeadRigs[i]; } updateBody(b); updatePoseHead(b); });
+  { let pb = null; for (const b of bodies) if (b.rig.on && (!pb || b.w > pb.w)) pb = b; body = pb || bodies[0]; bodyRig = body.rig; }
+  // o detector do corpo precisa de ver a cabeça: se há mãos mas não há corpo, explicar
+  if (S.layers.body && poseLM && !bodyRig.on && hands.some(h => h.active)) {
+    if (!bodyMiss) bodyMiss = now;
+    else if (now - bodyMiss > 4000 && now - bodyToastT > 25000 && mode !== 'objectos') { bodyToastT = now; toast(TXT.semCorpo, 4500); }
+  } else bodyMiss = 0;
   const f0 = primaryFace();
 
   // músculos
@@ -2111,6 +2156,7 @@ async function boot() {
     await loadAnatomy();
     headRigs = [makeHeadRig(), makeHeadRig()];
     bodyRig = makeBodyRig();
+    poseHeadRigs = [makeHeadRig(), makeHeadRig()];
     handRigs = [makeHandRig(), makeHandRig()];
     applyLook();
     await loadVision(m => (loadMsg.textContent = m));
@@ -2190,4 +2236,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { S, faces, hands, body, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
+window.espelho = { S, faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
