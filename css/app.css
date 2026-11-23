@@ -331,3 +331,23 @@ kbd { font: 600 11px/1 Fredoka, sans-serif; border: 1px solid var(--line); borde
   #handPanel { position: fixed; top: auto; left: 2vw; right: 2vw; bottom: 8px; width: auto; max-height: 55vh; z-index: 26; }
   .hp-view { aspect-ratio: 16 / 12; }
 }
+
+/* ---------- órgãos */
+.presets { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#organPanel { position: absolute; top: 12px; right: 12px; width: clamp(300px, 41%, 500px); max-height: calc(100% - 24px); display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #0a1a38f2, #071229f2); border: 1.5px solid #4fd6ff99; border-radius: 18px; box-shadow: 0 0 0 1px #0b2a4d, 0 0 26px #2fb8ff40, 0 14px 40px #000a;
+  z-index: 6; overflow: hidden; touch-action: none; }
+#organPanel[hidden] { display: none; }
+#organPanel .bp-lab { font-size: 11.5px; height: 20px; padding: 2px 7px 2px 6px; }
+.op-view { aspect-ratio: 1 / 1.15; }
+.op-sis { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 10px 6px; }
+.op-sis button { border: 1px solid var(--line); background: #0c1f40; color: var(--ink); border-radius: 10px; padding: 3px 8px; font-size: 12px; min-height: 28px; }
+.op-sis button.on { border-color: #ff8aa0; background: #3a1626; }
+.op-vitals { padding: 0 12px 5px; font-size: 11.5px; color: #ffd0da; }
+@media (max-width: 700px) {
+  #organPanel { position: fixed; top: auto; left: 2vw; right: 2vw; bottom: 8px; width: auto; max-height: 58vh; z-index: 26; }
+  .op-view { aspect-ratio: 16 / 13; }
+}
+/* os painéis de detalhe encolhem a vista 3D e a lista quando o ecrã é baixo */
+#brainPanel .bp-view, #handPanel .bp-view, #organPanel .bp-view { flex: 0 1 auto; min-height: 190px; }
+#brainPanel .bp-list, #handPanel .bp-list, #organPanel .bp-list { flex: 1 1 0; min-height: 64px; }

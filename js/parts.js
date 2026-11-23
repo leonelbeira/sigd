@@ -11,14 +11,16 @@ export const LAYERS = {
   muscles: { nome: 'Músculos',      emoji: '💪', cor: '#ff5a6a' },
   hands:   { nome: 'Ossos da mão',  emoji: '✋', cor: '#d9f1ff' },
   body:    { nome: 'Corpo',         emoji: '🩻', cor: '#b9c8ff' },
+  organs:  { nome: 'Órgãos',        emoji: '🫀', cor: '#ff8aa0' },
 };
 
 export const PRESETS = {
-  ossos:    { skull: true,  teeth: true,  spine: true,  brain: false, eyes: false, muscles: false, hands: true,  body: false },
-  corpo:    { skull: true,  teeth: true,  spine: true,  brain: false, eyes: false, muscles: false, hands: true,  body: true },
-  cerebro:  { skull: false, teeth: false, spine: false, brain: true,  eyes: true,  muscles: false, hands: false, body: false },
-  musculos: { skull: false, teeth: false, spine: false, brain: false, eyes: false, muscles: true,  hands: false, body: false },
-  tudo:     { skull: true,  teeth: true,  spine: true,  brain: true,  eyes: true,  muscles: true,  hands: true,  body: true },
+  ossos:    { skull: true,  teeth: true,  spine: true,  brain: false, eyes: false, muscles: false, hands: true,  body: false, organs: false },
+  corpo:    { skull: true,  teeth: true,  spine: true,  brain: false, eyes: false, muscles: false, hands: true,  body: true, organs: false },
+  cerebro:  { skull: false, teeth: false, spine: false, brain: true,  eyes: true,  muscles: false, hands: false, body: false, organs: false },
+  musculos: { skull: false, teeth: false, spine: false, brain: false, eyes: false, muscles: true,  hands: false, body: false, organs: false },
+  orgaos:   { skull: true,  teeth: false, spine: true,  brain: false, eyes: false, muscles: false, hands: false, body: true, organs: true },
+  tudo:     { skull: true,  teeth: true,  spine: true,  brain: true,  eyes: true,  muscles: true,  hands: true,  body: true, organs: true },
 };
 
 // Ossos, cérebro e olhos (presos ao modelo 3D da cabeça)
@@ -458,3 +460,36 @@ LADDER[6].mix.push(['qualLobo']);
 LADDER[11].mix.push(['qualLobo']);
 // testes das caretas (usados também na verificação guiada)
 export const TESTES = { SMILE, EYES, BROWS, JAW, KISS, ANGRY, SAD };
+
+// ------------------------------------------------------------------ perguntas e rondas sobre os órgãos
+QUIZ.push(
+  { p: 'Que órgão bate dentro do teu peito?', o: ['Estômago', 'Coração', 'Fígado'], c: 1, explica: 'O coração! Põe a mão no peito e sente-o a bater.' },
+  { p: 'Para onde vai a comida logo depois de a engolires?', o: ['Para os pulmões', 'Para o estômago', 'Para a bexiga'], c: 1, explica: 'Desce pelo esófago até ao estômago.' },
+);
+QUIZ_MAIS.push(
+  { d: 2, p: 'Onde é que a comida passa para o sangue?', o: ['Estômago', 'Intestino delgado', 'Bexiga'], c: 1, explica: 'No intestino delgado, um tubo de uns 6 metros cheio de pregas.' },
+  { d: 2, p: 'Que órgãos fazem a urina?', o: ['Os rins', 'O fígado', 'Os pulmões'], c: 0, explica: 'Os rins filtram o sangue; a urina desce pelos ureteres até à bexiga.' },
+  { d: 2, p: 'Para que serve o diafragma?', o: ['Para digerir', 'Para respirar', 'Para ouvir'], c: 1, explica: 'É o músculo da respiração: quando desce, o ar entra nos pulmões.' },
+  { d: 2, p: 'Qual é o maior órgão do corpo todo?', o: ['O fígado', 'O cérebro', 'A pele'], c: 2, explica: 'A pele! O maior órgão dentro do corpo é o fígado.' },
+  { d: 3, p: 'Quantos lobos tem o pulmão direito?', o: ['2', '3', '4'], c: 1, explica: 'Três. O esquerdo tem só dois, para dar lugar ao coração.' },
+  { d: 3, p: 'A insulina é produzida pelo…', o: ['Fígado', 'Pâncreas', 'Baço'], c: 1, explica: 'Pelos ilhéus de Langerhans do pâncreas.' },
+  { d: 3, p: 'A bílis é feita pelo fígado e guardada…', o: ['Na vesícula biliar', 'No estômago', 'Na bexiga'], c: 0, explica: 'Na vesícula biliar, que a lança no duodeno depois das refeições.' },
+  { d: 3, p: 'Que artéria leva o sangue do ventrículo esquerdo para o corpo?', o: ['Artéria pulmonar', 'Aorta', 'Carótida'], c: 1, explica: 'A aorta, a maior artéria do corpo.' },
+  { d: 3, p: 'A adrenalina é produzida…', o: ['Na tiróide', 'Nas glândulas supra-renais', 'No pâncreas'], c: 1, explica: 'Na medula das supra-renais, em cima dos rins.' },
+  { d: 4, p: 'Dor que começa à volta do umbigo e passa para a fossa ilíaca direita sugere…', o: ['Cólica renal', 'Apendicite', 'Úlcera gástrica'], c: 1, explica: 'Apendicite (migração da dor de visceral para parietal).' },
+  { d: 4, p: 'Que nervo inerva o diafragma?', o: ['Vago', 'Frénico (C3–C5)', 'Intercostal'], c: 1, explica: 'O frénico: "C3, 4 e 5 mantêm o diafragma vivo".' },
+  { d: 4, p: 'Dor muito forte no flanco que irradia para a virilha sugere…', o: ['Cólica renal', 'Apendicite', 'Pancreatite'], c: 0, explica: 'Um cálculo a descer pelo ureter.' },
+  { d: 4, p: 'Depois de uma pancada forte nas costelas esquerdas de baixo, que órgão pode romper?', o: ['Fígado', 'Baço', 'Rim direito'], c: 1, explica: 'O baço, protegido pelas costelas 9 a 11 do lado esquerdo.' },
+);
+// tocar num órgão (precisa do corpo à vista)
+export const TOQUE_ORGAO = [
+  { alvo: 'coracao', pede: 'Toca no sítio do teu coração!', ok: 'Isso! O coração fica no meio do peito, um bocadinho para a esquerda.' },
+  { alvo: 'estomago', pede: 'Toca na tua barriga, onde está o estômago!', ok: 'Boa! O estômago fica em cima, do lado esquerdo da barriga.' },
+  { alvo: 'pulmoes', pede: 'Toca no sítio dos teus pulmões!', ok: 'Certo! Os pulmões enchem quase todo o peito.' },
+  { alvo: 'figado', pede: 'Toca no sítio do teu fígado (do lado direito, por baixo das costelas)!', ok: 'Muito bem! O fígado é o maior órgão dentro do corpo.' },
+  { alvo: 'bexiga', pede: 'Toca no sítio da tua bexiga, lá em baixo na barriga!', ok: 'Certo! A bexiga fica atrás do osso da bacia.' },
+];
+LADDER[3].mix.push(['toqueOrgao']);
+LADDER[5].mix.push(['toqueOrgao']);
+LADDER[7].mix.push(['qualOrgao']);
+LADDER[10].mix.push(['qualOrgao']);

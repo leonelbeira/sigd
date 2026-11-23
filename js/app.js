@@ -3,12 +3,13 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
 import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker, ObjectDetector } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
 import { CANON, MIRROR } from './canon.js';
-import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS, BRAIN_LOBES, BRAIN_OVERVIEW, LOBE_PARTS, TESTES } from './parts.js';
-const APP_VERSION = 'v4.4';
+import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS, BRAIN_LOBES, BRAIN_OVERVIEW, LOBE_PARTS, TESTES, TOQUE_ORGAO } from './parts.js';
+const APP_VERSION = 'v4.5';
 import { addLobeAttributes, createBrainPanel, SPOTS, SPOT_GLSL, ACTIONS, BrainActivity } from './cerebro.js';
 import { createProfiles } from './perfis.js';
 import { createCheck } from './verificacao.js';
 import { buildHandGeos, makeHandMeshes, layoutHand, groupAnchor, createHandPanel, MAO_INFO, maoInfo, isHandBone } from './mao.js';
+import { ORGAOS, SISTEMAS, ANCORA, buildOrgans, makeOrganMeshes, animateOrgans, createOrganPanel, isOrgao } from './orgaos.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -180,6 +181,8 @@ const KINDS = {
   body:   ['#b9d7ff', '#efe4cc', 2.2, 0.06, 0.65],
   cart:   ['#7aa8ff', '#c9d6ef', 1.6, 0.02, 0.70],
 };
+for (const o of ORGAOS) KINDS['org_' + o.id] = [o.cor, o.cor, 1.6, 0.17, 0.0];
+KINDS.orgHi = ['#ffe36e', '#ffd35a', 1.4, 0.32, 0.13];
 const MATS = { xray: {}, neon: {}, solid: {} };
 for (const [k, [cx, cs, pw, fill, hue]] of Object.entries(KINDS)) {
   for (const look of ['xray', 'neon']) {
@@ -248,6 +251,7 @@ async function loadAnatomy() {
   GEO.bone = new THREE.LatheGeometry(prof, 12);
   GEO.carpal = new THREE.SphereGeometry(1, 14, 10);
   GEO.hand = buildHandGeos(THREE, mergeGeos);
+  GEO.organs = buildOrgans(THREE, mergeGeos);
   for (const s of [-1, 1]) {
     const c = new THREE.CatmullRomCurve3([[3.1, 1.0, 3.85], [2.3, 1.1, 2.5], [0.35, 1.2, 1.0], [1.3, 1.6, -1.2]].map(p => new THREE.Vector3(s * p[0], p[1], p[2])));
     GEO['nerve' + s] = new THREE.TubeGeometry(c, 30, 0.2, 8, false);
@@ -292,7 +296,8 @@ function makeHandRig() {
 let handHi = null;   // grupo de ossos da mão a brilhar (escolhido no painel ou no cartão)
 
 let headRigs = [], handRigs = [], bodyRig = null, poseHeadRigs = [];
-let forceLayers = {}, brainPanel = null, handPanel = null, lobesWas = null;
+let forceLayers = {}, brainPanel = null, handPanel = null, organPanel = null, lobesWas = null, orgHi = null;
+const vitals = { bpm: 85, rpm: 16, act: 0, said: false, prevC: null };
 const LOBE_IDX = Object.fromEntries(BRAIN_LOBES.map((l, i) => [l.id, i]));
 const LOBE_HINT = [[[2.7, 6.3, 4.6], [-2.7, 6.3, 4.6]], [[4.0, 8.2, -2.4], [-4.0, 8.2, -2.4]], [[5.9, 2.0, 0.6], [-5.9, 2.0, 0.6]], [[0, 4.5, -8.6]], [[0, -0.6, -7.0]], [[0, -1.2, -3.8]]];
 
@@ -423,7 +428,9 @@ function makeBodyRig() {
   const bones = LIMBS.map(() => addMesh(limbs, GEO.bone, 'body', 'body'));
   const patellas = [0, 1].map(() => addMesh(limbs, GEO.carpal, 'body', 'body'));
   torso.visible = pelvis.visible = limbs.visible = false;
-  return { torso, pelvis, limbs, bones, patellas, X: V(), Y: V(), Z: V(), C: V(), k: 1, ky: 1, hasHips: false, hip: { C: V(), X: V(), k: 1 } };
+  const organs = makeOrganMeshes(THREE, GEO.organs, (g, geo, id) => addMesh(g, geo, 'org_' + id, 'organs'));
+  organs.g.matrixAutoUpdate = false; organs.g.visible = false; scene.add(organs.g);
+  return { torso, pelvis, limbs, bones, patellas, organs, X: V(), Y: V(), Z: V(), C: V(), k: 1, ky: 1, hasHips: false, hip: { C: V(), X: V(), k: 1 } };
 }
 
 
@@ -652,7 +659,7 @@ function detect(now) {
   } else if (objTracks.length) objTracks.length = 0;
 
   // corpo
-  const needPose = S.layers.body || (mode === 'desafio' && ch && ch.list[ch.i]?.corpo);
+  const needPose = S.layers.body || S.layers.organs || !!organPanel?.isOpen || (mode === 'desafio' && ch && ch.list[ch.i]?.corpo);
   if (needPose) ensurePose();
   if (poseLM && needPose && !(handSkip && frameN % 2 === 0)) {
     const pr = poseLM.detectForVideo(source, ts);
@@ -716,8 +723,12 @@ const hq = new THREE.Quaternion();
 const VIS = 0.5;
 function updateBody(body) {
   const b = body.rig, J = body.J, vis = body.vis;
-  const on = body.active && (S.layers.body || (mode === 'desafio' && ch?.list[ch.i]?.corpo)) && vis[11] > VIS && vis[12] > VIS;
-  b.torso.visible = b.pelvis.visible = b.limbs.visible = on;
+  const chal = mode === 'desafio' && ch?.list && ch.list[ch.i]?.corpo;
+  const showOrg = S.layers.organs || !!forceLayers.organs || !!organPanel?.isOpen;
+  const on = body.active && (S.layers.body || showOrg || chal) && vis[11] > VIS && vis[12] > VIS;
+  const skel = on && (S.layers.body || (chal && !forceLayers.organs));
+  b.torso.visible = b.pelvis.visible = b.limbs.visible = skel;
+  b.organs.g.visible = on && showOrg;
   b.on = on;
   if (!on) return;
   // tronco
@@ -733,6 +744,11 @@ function updateBody(body) {
   const k = b.k, ky = b.ky;
   b.torso.matrix.set(b.X.x * k, b.Y.x * ky, b.Z.x * k, b.C.x, b.X.y * k, b.Y.y * ky, b.Z.y * k, b.C.y, b.X.z * k, b.Y.z * ky, b.Z.z * k, b.C.z, 0, 0, 0, 1);
   b.torso.matrixWorldNeedsUpdate = true;
+  if (b.organs.g.visible) {
+    b.organs.g.matrix.copy(b.torso.matrix); b.organs.g.matrixWorldNeedsUpdate = true;
+    animateOrgans(b.organs, performance.now() / 1000, vitals.bpm, vitals.rpm);
+    for (const p of b.organs.parts) { const want = MATS[S.look][p.id === orgHi ? 'orgHi' : 'org_' + p.id]; if (p.mesh.material !== want) p.mesh.material = want; }
+  }
   // bacia
   b.pelvis.visible = b.hasHips;
   if (b.hasHips) {
@@ -797,8 +813,22 @@ function bodyTargets(opts = {}) {
   for (const bd of bodies) if (bd.rig?.on) bodyTargetsOf(bd, opts, out);
   return out;
 }
+const ORG_ITEMS = Object.fromEntries(ORGAOS.map(o => [o.id, { ...o, cient: o.cient || o.nome, layer: 'organs' }]));
+function organTargetsOf(body, opts, out) {
+  const b = body.rig;
+  if (!b.organs.g.visible && !opts.all) return;
+  const detail = !!organPanel?.isOpen, sis = organPanel?.system;
+  for (const o of ORGAOS) {
+    if (!(opts.all || opts.touch || detail || o.principal)) continue;
+    if (detail && sis && o.sis !== sis) continue;
+    const a = ANCORA[o.id];
+    const [x, y] = torsoPt(b, a[0], a[1], a[2]);
+    if (x > 0 && x < vw && y > 0 && y < vh) out.push({ kind: 'organ', item: ORG_ITEMS[o.id], id: o.id, x, y, fc: 0.6 + a[2] * 0.03, layer: 'organs' });
+  }
+}
 function bodyTargetsOf(body, opts, out) {
   const b = body.rig;
+  organTargetsOf(body, opts, out);
   if (!S.layers.body && !opts.all) return out;
   const J = body.J, vis = body.vis, P = BODY_PARTS;
   const get = id => P.find(p => p.id === id);
@@ -1125,12 +1155,14 @@ function labelText(t) {
 function drawLabels(f, st) {
   const ctx = lctx;
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, lCanvas.width, lCanvas.height);
-  const bOn = bodyRig?.on && S.layers.body;
+  const bOn = bodyRig?.on && (S.layers.body || bodyRig.organs.g.visible);
   const hideForQuiz = mode === 'desafio' && ch?.list && ch.phase === 'ask' && ch.list[ch.i]?.mostra;
   const hDetail = !!handPanel?.isOpen, ph = primaryHand();
   if (!S.labels || (!f && !bOn && !ph) || mode === 'objectos' || hideForQuiz) return;
   const sc = lCanvas.width / vw; ctx.setTransform(sc, 0, 0, sc, 0, 0);
-  let T = hDetail && ph ? handTargets() : [...collectTargets(f).filter(t => !insideHands(t.x, t.y)), ...handTargets(), ...bodyTargets().filter(t => !insideHands(t.x, t.y))].filter(t => !t.extra);
+  const oDetail = !!organPanel?.isOpen && bodyRig?.on;
+  let T = hDetail && ph ? handTargets() : oDetail ? bodyTargets().filter(t => t.kind === 'organ')
+    : [...collectTargets(f).filter(t => !insideHands(t.x, t.y)), ...handTargets(), ...bodyTargets().filter(t => !insideHands(t.x, t.y))].filter(t => !t.extra);
   // um rótulo por parte: o lado mais virado para a câmara
   const best = new Map();
   for (const t of T) { const k = t.kind + t.id; if (!best.has(k) || best.get(k).fc < t.fc) best.set(k, t); }
@@ -1146,7 +1178,7 @@ function drawLabels(f, st) {
   const fx = handFocus ? vw - hcx : f ? vw - f.lm[168 * 3] : vw - bodyRig.C.x;    // centro da mão, da cara ou do corpo no ecrã (espelhado)
   const half = handFocus ? hw * 0.55 + 24 * u : f ? f.faceW * 0.62 + 30 * u : body.w * 0.55;
   const cols = { L: [], R: [] };
-  const panelOpen = (brainPanel?.isOpen || handPanel?.isOpen) && cssW > 700;   // o painel tapa a direita: as etiquetas vão para a esquerda
+  const panelOpen = (brainPanel?.isOpen || handPanel?.isOpen || organPanel?.isOpen) && cssW > 700;   // o painel tapa a direita: as etiquetas vão para a esquerda
   for (const t of T) { t.dx = vw - t.x; t.dy = t.y; (panelOpen || t.dx < fx ? cols.L : cols.R).push(t); }
   for (const [side, list] of Object.entries(cols)) {
     list.sort((a, b) => a.dy - b.dy);
@@ -1238,10 +1270,11 @@ function showCard(t, say = true) {
   $('#card .c-title').textContent = itNome(it);
   $('#card .c-sci').textContent = it.cient && it.cient !== itNome(it) ? it.cient : '';
   $('#card .c-text').textContent = itFacto(it);
-  const brainy = it.layer === 'brain' && mode !== 'desafio', handy = t.kind === 'hand' && mode !== 'desafio';
+  const brainy = it.layer === 'brain' && mode !== 'desafio', handy = t.kind === 'hand' && mode !== 'desafio', organy = t.kind === 'organ' && mode !== 'desafio';
   const more = $('#card .c-more');
-  more.hidden = !(brainy && !brainPanel?.isOpen) && !(handy && !handPanel?.isOpen);
-  more.textContent = handy ? '🔍 Ver os ossos da mão em detalhe' : '🔍 Ver os lobos em detalhe';
+  more.hidden = !(brainy && !brainPanel?.isOpen) && !(handy && !handPanel?.isOpen) && !(organy && !organPanel?.isOpen);
+  more.textContent = handy ? '🔍 Ver os ossos da mão em detalhe' : organy ? '🔍 Ver os órgãos em detalhe' : '🔍 Ver os lobos em detalhe';
+  if (organPanel?.isOpen && isOrgao(t.id)) organPanel.select(t.id, false);
   $('#card').dataset.id = t.id; $('#card').dataset.kind = t.kind;
   if (brainPanel?.isOpen && LOBE_IDX[t.id] != null) brainPanel.select(LOBE_IDX[t.id], false);
   if (handPanel?.isOpen && isHandBone(t.id)) handPanel.select(t.id, false);
@@ -1274,7 +1307,7 @@ function setMode(m) {
   $$('.modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('#prompt').hidden = true; ch = null; hunt = null; dwell.id = null; hideQuiz();
   $('#card').hidden = true; selected = null;
-  if (m === 'desafio' || m === 'objectos') { closeBrainPanel(); closeHandPanel(); }
+  if (m === 'desafio' || m === 'objectos') { closeBrainPanel(); closeHandPanel(); closeOrganPanel(); }
   if (m === 'tocar') {
     S.layers.hands = true; refreshUI();
     promptShow('👆', TXT.tocaIntro, '', null);
@@ -1340,7 +1373,8 @@ const ladoWord = (side, g) => side === 1 ? (g === 'f' ? 'esquerda' : 'esquerdo')
 const mestreTxt = c => (c.pedeCient || c.pede).split(':')[0].replace(/[!.]?$/, '!');
 function buildRounds(L) {
   const withBody = S.layers.body && bodyRig?.on;
-  const gens = L.mix.filter(([k]) => k !== 'corpo' || withBody);
+  const tracked = !!bodyRig?.on;
+  const gens = L.mix.filter(([k]) => (k !== 'corpo' || withBody) && ((k !== 'qualOrgao' && k !== 'toqueOrgao') || tracked));
   const used = new Set(), out = [];
   const pick = (arr, key) => { const free = arr.filter(x => !used.has(key(x))); const src = free.length ? free : arr; const x = src[Math.floor(Math.random() * src.length)]; used.add(key(x)); return x; };
   const SIMPLE_C = ['mZigomatico', 'mandibula', 'mOrbBoca', 'mOrbOlho'], SIMPLE_T = ['nasal', 'mandibula', 'cranio', 'dentes'];
@@ -1379,6 +1413,13 @@ function buildRounds(L) {
       const opts = shuffle([m, ...shuffle(MUSCLES.filter(x => x !== m)).slice(0, 2)]);
       return { tipo: 'quiz', mostra: m.id, mostraKind: 'muscle', alvo: m.id, q: { p: 'Que músculo é este?', o: opts.map(x => x.cient), c: opts.indexOf(m), explica: m.facto }, txt: 'Que músculo está a brilhar? Aponta para a resposta.', emoji: '💪', key: 'm' + m.id };
     }
+    if (k === 'qualOrgao') {
+      const pool = ORGAOS.filter(o => o.principal || L.cient);
+      const o = pick(pool, x => 'g' + x.id);
+      const opts = shuffle([o, ...shuffle(pool.filter(x => x !== o)).slice(0, 2)]);
+      return { tipo: 'quiz', corpo: true, mostra: o.id, mostraKind: 'organ', q: { p: 'Que órgão é este?', o: opts.map(x => x.nome), c: opts.indexOf(o), explica: L.cient ? o.factoCient : o.facto }, txt: 'Que órgão está a brilhar? Aponta para a resposta.', emoji: '🫀', key: 'g' + o.id };
+    }
+    if (k === 'toqueOrgao') { const t = pick(TOQUE_ORGAO, x => 'o' + x.alvo); return { tipo: 'toque', corpo: true, orgao: true, alvo: t.alvo, txt: t.pede, emoji: '🫀', ok: t.ok, key: 'o' + t.alvo }; }
     if (k === 'qualLobo') {
       const lb = pick(BRAIN_LOBES, x => 'b' + x.id), idx = BRAIN_LOBES.indexOf(lb);
       const opts = shuffle([lb, ...shuffle(BRAIN_LOBES.filter(x => x !== lb)).slice(0, 2)]);
@@ -1577,6 +1618,7 @@ function updateInteraction(f0, dt, now) {
           selected = { id: c.mostra, until: now + 400 };
           let anchors = [];
           if (c.mostraKind === 'part') anchors = collectTargets(f0, { all: true }).filter(t => t.id === c.mostra && t.kind === 'part' && !t.extra);
+          else if (c.mostraKind === 'organ') anchors = bodyTargets({ all: true }).filter(t => t.id === c.mostra);
           else if (c.mostraKind === 'lobe') anchors = f0?.rig ? LOBE_HINT[c.lobeIdx].map(a => { const [x, y] = projRig(f0.rig, ...a); return { x, y }; }) : [];
           else if (f0?.mgeo) anchors = Object.entries(f0.mgeo).filter(([k]) => k.startsWith(c.mostra)).map(([, g]) => ({ x: g.c[0], y: g.c[1] }));
           fxDraw.hintAt = anchors;
@@ -1683,6 +1725,22 @@ function drawFx(dt, st, now) {
         ctx.fillStyle = '#e8f6ff'; ctx.beginPath(); ctx.arc(cx, cy, 3 * u, 0, 7); ctx.fill();
         ctx.restore();
       }
+    }
+  }
+  if (organPanel?.isOpen && cssW > 700 && bodyRig?.on && bodyRig.organs.g.visible) {
+    const vr = organPanel.el.querySelector('.bp-view').getBoundingClientRect(), sr = stage.getBoundingClientRect();
+    const id = organPanel.selected || 'coracao', a = ANCORA[id];
+    const [ax, ay] = torsoPt(bodyRig, a[0], a[1], a[2]);
+    const k = vw / sr.width, px = (vr.left - sr.left) * k, py0 = (vr.top - sr.top) * k, py1 = (vr.bottom - sr.top) * k;
+    const cx = vw - ax, cy = ay, rad = Math.max(14 * u, body.w * 0.13);
+    if (cx + rad < px - 10 * u) {
+      const pulse = 0.6 + 0.4 * Math.sin(now / 400);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(111,227,255,0.55)'; ctx.lineWidth = 1.5 * u;
+      ctx.beginPath(); ctx.moveTo(cx + rad * 0.2, cy - rad); ctx.lineTo(px, py0); ctx.moveTo(cx + rad * 0.2, cy + rad); ctx.lineTo(px, py1); ctx.stroke();
+      ctx.setLineDash([4 * u, 4 * u]); ctx.strokeStyle = `rgba(220,245,255,${0.6 + 0.3 * pulse})`; ctx.lineWidth = 2 * u;
+      ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      ctx.restore();
     }
   }
   if (handPanel?.isOpen && cssW > 700) {
@@ -2056,7 +2114,7 @@ function frame(nowMs) {
 
   // lobos do cérebro: cores e destaque
   const crr = mode === 'desafio' && ch && ch.list && ch.phase !== 'end' ? ch.list[ch.i] : null;
-  forceLayers = crr?.mostraKind === 'lobe' ? { brain: true, skull: false, teeth: false, spine: false } : {};   // na ronda dos lobos o crânio sai da frente
+  forceLayers = crr?.mostraKind === 'lobe' ? { brain: true, skull: false, teeth: false, spine: false } : crr?.mostraKind === 'organ' || crr?.orgao ? { organs: true } : {};   // na ronda dos lobos o crânio sai da frente
   const lobesOn = !!S.lobes || !!forceLayers.brain;
   let hi = -1;
   if (crr?.mostraKind === 'lobe' && ch.phase === 'ask') hi = crr.lobeIdx;
@@ -2070,6 +2128,8 @@ function frame(nowMs) {
     if (!f.rig) f.rig = headRigs[i];
     if (f.active && f.lm) updateHead(f); else f.rig.g.visible = false;
   });
+  orgHi = crr?.mostraKind === 'organ' && ch.phase === 'ask' ? crr.mostra : organPanel?.isOpen && organPanel.selected ? organPanel.selected : (selected && isOrgao(selected.id) && performance.now() < selected.until ? selected.id : null);
+  updateVitals(dt);
   handHi = handPanel?.isOpen && handPanel.selected ? handPanel.selected : (selected && isHandBone(selected.id) && performance.now() < selected.until ? selected.id : null);
   hands.forEach((h, i) => {
     if (!h.rig) h.rig = handRigs[i];
@@ -2107,6 +2167,7 @@ function frame(nowMs) {
   drawFx(dt, st, now);
   brainPanel?.render(now);
   handPanel?.render(now);
+  organPanel?.render(now);
   recFrame(now);
 
   // dicas
@@ -2154,7 +2215,7 @@ function composeFrame(g) {
   g.restore();
   g.drawImage(lCanvas, 0, 0, vw, vh);
   g.drawImage(fxCanvas, 0, 0, vw, vh);
-  for (const pnl of [brainPanel, handPanel]) if (pnl?.isOpen) {
+  for (const pnl of [brainPanel, handPanel, organPanel]) if (pnl?.isOpen) {
     const sr = stage.getBoundingClientRect(), pr = pnl.el.getBoundingClientRect(), k = vw / sr.width;
     pnl.drawInto(g, (pr.left - sr.left) * k, (pr.top - sr.top) * k, pr.width * k, pr.height * k);
   }
@@ -2314,16 +2375,41 @@ function updateBrainAction(dt, f0) {
   for (const look of ['xray', 'neon']) MATS[look].brain.uniforms.uSpotA.value.set(a);
   brainPanel.setSpots(a, brainAct.active(), ACTIONS);
 }
+// coração e respiração "a fingir": sobem quando a pessoa salta ou se mexe muito (ombros a mexer depressa)
+function updateVitals(dt) {
+  const b = bodies.find(x => x.rig?.on && x.lm);
+  let sp = 0;
+  if (b) {
+    const cx = (b.lm[33] + b.lm[36]) / 2, cy = (b.lm[34] + b.lm[37]) / 2;
+    if (vitals.prevC && dt > 0) sp = Math.hypot(cx - vitals.prevC[0], cy - vitals.prevC[1]) / dt / Math.max(20, b.w);
+    vitals.prevC = [cx, cy];
+  } else vitals.prevC = null;
+  vitals.sp = lerp(vitals.sp || 0, sp, clamp(dt * 4, 0, 1));          // velocidade dos ombros (larguras de ombros por segundo), suavizada
+  const tgt = clamp((vitals.sp - 0.35) / 1.2, 0, 1);
+  vitals.act = tgt > vitals.act ? lerp(vitals.act, tgt, clamp(dt * 2, 0, 1)) : Math.max(tgt, vitals.act - dt * 0.04);
+  vitals.bpm = 85 + 75 * vitals.act; vitals.rpm = 16 + 18 * vitals.act;
+  organPanel?.setVitals(vitals.bpm, vitals.rpm);
+  if (vitals.bpm > 125 && !vitals.said && S.voice && (organPanel?.isOpen || S.layers.organs)) {
+    vitals.said = true; speak('O teu coração acelerou! Os músculos precisam de mais oxigénio, por isso o coração bate mais depressa e respiras mais vezes.');
+  }
+}
+function openOrganPanel() {
+  if (!organPanel) return;
+  closeBrainPanel(); closeHandPanel();
+  S.layers.organs = true; organPanel.open(); $('#card .c-more').hidden = true; refreshUI(); bodyNudge();
+}
+function closeOrganPanel() { if (organPanel?.isOpen) { organPanel.close(); orgHi = null; } }
+function toggleOrganPanel() { organPanel?.isOpen ? closeOrganPanel() : openOrganPanel(); }
 function openHandPanel() {
   if (!handPanel) return;
-  closeBrainPanel();
+  closeBrainPanel(); closeOrganPanel();
   S.layers.hands = true; handPanel.open(); $('#card .c-more').hidden = true; refreshUI();
 }
 function closeHandPanel() { if (handPanel?.isOpen) { handPanel.close(); handHi = null; } }
 function toggleHandPanel() { handPanel?.isOpen ? closeHandPanel() : openHandPanel(); }
 function openBrainPanel(view) {
   if (!brainPanel) return;
-  closeHandPanel();
+  closeHandPanel(); closeOrganPanel();
   S.layers.brain = true; S.brainPanel = true; brainPanel.open(view); $('#card .c-more').hidden = true; refreshUI();
 }
 function closeBrainPanel() { if (S.brainAction) setBrainAction(false); if (brainPanel?.isOpen) { brainPanel.close(); S.brainPanel = false; saveSettings(); } }
@@ -2347,7 +2433,7 @@ function initUI() {
     fps: () => fps, size: () => [vw, vh], gpu: () => (usedGPU ? 'com placa gráfica (GPU)' : 'só processador (CPU)'),
     device: () => { const u = navigator.userAgent; const os = /Windows/.test(u) ? 'Windows' : /Android/.test(u) ? 'Android' : /iPhone|iPad/.test(u) ? 'iOS' : /Mac/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'outro'; const br = (u.match(/(Edg|Chrome|Firefox|Safari)\/(\d+)/) || []).slice(1).join(' '); return `${os} · ${br.replace('Edg', 'Edge')}`; },
     profile: () => profiles.current, speak, toast, saveBlob, ok: sndOk,
-    onStart: () => { setMode('explorar'); closeBrainPanel(); closeHandPanel(); S.layers = { ...PRESETS.ossos }; refreshUI(); },
+    onStart: () => { setMode('explorar'); closeBrainPanel(); closeHandPanel(); closeOrganPanel(); S.layers = { ...PRESETS.ossos }; refreshUI(); },
     onStep: id => { if (id === 'corpo') { S.layers.body = true; refreshUI(); } },
   });
   $('#btnCheck').onclick = () => { if (!running) { toast('Liga primeiro a câmara 🎥'); return; } if (window.innerWidth < 900) { S.panel = false; refreshUI(); } check.start(); };
@@ -2361,15 +2447,18 @@ function initUI() {
   $$('[data-preset]').forEach(b => b.onclick = () => {
     S.layers = { ...PRESETS[b.dataset.preset] };
     if (b.dataset.preset === 'cerebro' && mode !== 'objectos' && mode !== 'desafio') openBrainPanel(); else if (!S.layers.brain) closeBrainPanel();
+    if (b.dataset.preset === 'orgaos' && mode !== 'objectos' && mode !== 'desafio') openOrganPanel(); else if (!S.layers.organs) closeOrganPanel();
     refreshUI(); sndTick(); bodyNudge();
   });
   $('#btnBrainDetail').onclick = () => toggleBrainPanel();
   $('#card .c-more').onclick = () => {
     const id = $('#card').dataset.id;
     if ($('#card').dataset.kind === 'hand') { openHandPanel(); if (isHandBone(id)) handPanel.select(id, false); return; }
+    if ($('#card').dataset.kind === 'organ') { openOrganPanel(); if (isOrgao(id)) organPanel.select(id, false); return; }
     openBrainPanel(); if (LOBE_IDX[id] != null) brainPanel.select(LOBE_IDX[id], false);
   };
   $('#btnHandDetail').onclick = () => toggleHandPanel();
+  $('#btnOrganDetail').onclick = () => toggleOrganPanel();
   $$('.seg[data-set]').forEach(seg => seg.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     setPath(S, seg.dataset.set, b.dataset.val);
@@ -2377,7 +2466,7 @@ function initUI() {
     refreshUI();
   });
   $('#btnProgReset').onclick = () => { S.prog = { max: 1, best: {} }; saveSettings(); toast('Progresso do Desafio recomeçado.'); if (mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); };
-  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); if (el.dataset.set === 'unlockAll' && mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); if (el.dataset.set === 'sci') { if (brainPanel?.isOpen) brainPanel.refreshText(); if (handPanel?.isOpen) handPanel.refreshText(); } });
+  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); if (el.dataset.set === 'unlockAll' && mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); if (el.dataset.set === 'sci') { for (const pnl of [brainPanel, handPanel, organPanel]) if (pnl?.isOpen) pnl.refreshText(); } });
   $$('[data-fit]').forEach(b => b.onclick = () => { S.fit = { ...FIT_PRESETS[b.dataset.fit] }; S.babyTeeth = b.dataset.fit === 'crianca'; refreshUI(); });
   $('#btnFitReset').onclick = () => { S.fit = { ...FIT_PRESETS.adulto }; refreshUI(); };
   $$('.modes button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
@@ -2396,6 +2485,7 @@ function initUI() {
     else if (e.key === 'l' || e.key === 'L') { S.labels = !S.labels; refreshUI(); }
     else if (e.key === 'b' || e.key === 'B') toggleBrainPanel();
     else if (e.key === 'm' || e.key === 'M') toggleHandPanel();
+    else if (e.key === 'o' || e.key === 'O') toggleOrganPanel();
     else if (e.key === 'Escape') { $('#card').hidden = true; selected = null; }
     else if ('12345'.includes(e.key) && e.key) { S.layers = { ...PRESETS[['ossos', 'corpo', 'cerebro', 'musculos', 'tudo'][+e.key - 1]] }; refreshUI(); }
   });
@@ -2403,7 +2493,7 @@ function initUI() {
   stage.addEventListener('pointermove', e => { pointer = toVid(e); });
   stage.addEventListener('pointerleave', () => { pointer = null; });
   stage.addEventListener('click', e => {
-    if (e.target.closest('#card, #prompt, #quiz, #objSummary, #brainPanel, #handPanel, #check')) return;
+    if (e.target.closest('#card, #prompt, #quiz, #objSummary, #brainPanel, #handPanel, #organPanel, #check')) return;
     const [x0c, y0c] = toVid(e);
     if (mode === 'objectos') {
       const xd0 = vw - x0c;
@@ -2434,6 +2524,10 @@ async function boot() {
     headRigs = [makeHeadRig(), makeHeadRig()];
     bodyRig = makeBodyRig();
     poseHeadRigs = [makeHeadRig(), makeHeadRig()];
+    { const t = buildTorsoGeos();
+      organPanel = createOrganPanel(THREE, { organs: GEO.organs, context: [{ geo: t.bones }, { geo: t.spine }, { geo: buildPelvisGeo(), pos: [0, -47, 0] }], host: stage, sci: () => !!S.sci, speak,
+        onSelect: id => { if (id && !$('#card').hidden && $('#card').dataset.id !== id) $('#card').hidden = true; },
+        onBrain: () => openBrainPanel() }); }
     handPanel = createHandPanel(THREE, { geos: GEO.hand, host: stage, sci: () => !!S.sci, speak,
       onSelect: id => { if (id && !$('#card').hidden && $('#card').dataset.id !== id) $('#card').hidden = true; } });
     brainPanel = createBrainPanel(THREE, { geo: GEO.brain, lobes: BRAIN_LOBES, overview: BRAIN_OVERVIEW, host: stage, sci: () => !!S.sci, speak,
@@ -2520,4 +2614,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { get handPanel() { return handPanel; }, handTargets, get check() { return check; }, S, get brainPanel() { return brainPanel; }, get profiles() { return profiles; }, brainAct, setBrainAction, measureActivity: () => measureActivity(1 / 30, primaryFace()), faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
+window.espelho = { get organPanel() { return organPanel; }, vitals, bodyTargets, get handPanel() { return handPanel; }, handTargets, get check() { return check; }, S, get brainPanel() { return brainPanel; }, get profiles() { return profiles; }, brainAct, setBrainAction, measureActivity: () => measureActivity(1 / 30, primaryFace()), faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
