@@ -317,3 +317,17 @@ kbd { font: 600 11px/1 Fredoka, sans-serif; border: 1px solid var(--line); borde
 .ck-t2 { margin: 8px 0; color: var(--mute); font-size: 14px; }
 .ck-rep { width: 100%; box-sizing: border-box; font: 12.5px/1.45 ui-monospace, Consolas, monospace; background: #06101f; color: #d6ecff; border: 1px solid var(--line); border-radius: 10px; padding: 8px; resize: vertical; }
 @media (max-width: 700px) { #check { position: fixed; top: auto; bottom: 8px; left: 2vw; width: 96vw; z-index: 30; } .ck-t { font-size: 16px; } }
+
+/* ---------- detalhe da mão (mesmo estilo do painel do cérebro) */
+#handPanel { position: absolute; top: 12px; right: 12px; width: clamp(300px, 41%, 500px); max-height: calc(100% - 24px); display: flex; flex-direction: column;
+  background: linear-gradient(180deg, #0a1a38f2, #071229f2); border: 1.5px solid #4fd6ff99; border-radius: 18px; box-shadow: 0 0 0 1px #0b2a4d, 0 0 26px #2fb8ff40, 0 14px 40px #000a;
+  z-index: 6; overflow: hidden; touch-action: none; }
+#handPanel[hidden] { display: none; }
+.hp-view { aspect-ratio: 1 / 1.02; }
+#handPanel .bp-lab { font-size: 12px; height: 22px; padding: 2px 8px 2px 6px; }
+.hp-curl { display: flex; align-items: center; gap: 4px; font-size: 14px; border: 1px solid var(--line); background: #0c1f40; border-radius: 10px; padding: 0 8px; min-height: 30px; }
+.hp-curl input { width: 70px; accent-color: var(--yellow); }
+@media (max-width: 700px) {
+  #handPanel { position: fixed; top: auto; left: 2vw; right: 2vw; bottom: 8px; width: auto; max-height: 55vh; z-index: 26; }
+  .hp-view { aspect-ratio: 16 / 12; }
+}

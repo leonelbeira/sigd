@@ -4,10 +4,11 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.m
 import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker, ObjectDetector } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
 import { CANON, MIRROR } from './canon.js';
 import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS, BRAIN_LOBES, BRAIN_OVERVIEW, LOBE_PARTS, TESTES } from './parts.js';
-const APP_VERSION = 'v4.3';
+const APP_VERSION = 'v4.4';
 import { addLobeAttributes, createBrainPanel, SPOTS, SPOT_GLSL, ACTIONS, BrainActivity } from './cerebro.js';
 import { createProfiles } from './perfis.js';
 import { createCheck } from './verificacao.js';
+import { buildHandGeos, makeHandMeshes, layoutHand, groupAnchor, createHandPanel, MAO_INFO, maoInfo, isHandBone } from './mao.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -175,6 +176,7 @@ const KINDS = {
   pupil:  ['#fff5c0', '#101010', 1.0, 0.45, 0.12],
   nerve:  ['#ffd45a', '#f0d28c', 2.2, 0.05, 0.10],
   hand:   ['#d9f1ff', '#efe4cc', 2.0, 0.10, 0.60],
+  handHi: ['#ffe36e', '#ffd35a', 1.5, 0.26, 0.13],
   body:   ['#b9d7ff', '#efe4cc', 2.2, 0.06, 0.65],
   cart:   ['#7aa8ff', '#c9d6ef', 1.6, 0.02, 0.70],
 };
@@ -193,7 +195,7 @@ for (const [k, [cx, cs, pw, fill, hue]] of Object.entries(KINDS)) {
     MATS[look][k] = m;
   }
   const sm = new THREE.MeshStandardMaterial({ color: cs, roughness: k === 'tooth' ? 0.35 : 0.62, metalness: 0, side: THREE.FrontSide });
-  if (k === 'hand') { sm.depthTest = false; }
+  if (k === 'hand' || k === 'handHi') { sm.depthTest = false; }
   if (k === 'cart') { sm.transparent = true; sm.opacity = 0.55; }
   MATS.solid[k] = sm;
 }
@@ -201,7 +203,7 @@ const allMeshes = []; // {mesh, kind, layer}
 function addMesh(parent, geo, kind, layer) {
   const m = new THREE.Mesh(geo, MATS[S.look][kind]);
   m.frustumCulled = false;
-  if (kind === 'hand') m.renderOrder = 10;
+  if (kind === 'hand' || kind === 'handHi') m.renderOrder = 10;
   parent.add(m);
   allMeshes.push({ mesh: m, kind, layer });
   return m;
@@ -245,6 +247,7 @@ async function loadAnatomy() {
     .map(([x, y]) => new THREE.Vector2(x, y));
   GEO.bone = new THREE.LatheGeometry(prof, 12);
   GEO.carpal = new THREE.SphereGeometry(1, 14, 10);
+  GEO.hand = buildHandGeos(THREE, mergeGeos);
   for (const s of [-1, 1]) {
     const c = new THREE.CatmullRomCurve3([[3.1, 1.0, 3.85], [2.3, 1.1, 2.5], [0.35, 1.2, 1.0], [1.3, 1.6, -1.2]].map(p => new THREE.Vector3(s * p[0], p[1], p[2])));
     GEO['nerve' + s] = new THREE.TubeGeometry(c, 30, 0.2, 8, false);
@@ -280,23 +283,16 @@ function makeHeadRig() {
   return r;
 }
 
-const HAND_BONES = [
-  ['1', '2', 0.052], ['2', '3', 0.048], ['3', '4', 0.04, 0.16],
-  ['b5', '5', 0.045], ['5', '6', 0.047], ['6', '7', 0.041], ['7', '8', 0.036, 0.18],
-  ['b9', '9', 0.046], ['9', '10', 0.048], ['10', '11', 0.042], ['11', '12', 0.036, 0.18],
-  ['b13', '13', 0.043], ['13', '14', 0.045], ['14', '15', 0.04], ['15', '16', 0.035, 0.18],
-  ['b17', '17', 0.04], ['17', '18', 0.041], ['18', '19', 0.036], ['19', '20', 0.032, 0.18],
-  ['rad0', 'rad1', 0.062], ['uln0', 'uln1', 0.056],
-];
+// ossos da mão: formas e posições em js/mao.js (27 ossos + rádio e cúbito)
 function makeHandRig() {
-  const g = new THREE.Group(); g.visible = false; scene.add(g);
-  const bones = HAND_BONES.map(() => addMesh(g, GEO.bone, 'hand', 'hands'));
-  const carpals = Array.from({ length: 8 }, () => addMesh(g, GEO.carpal, 'hand', 'hands'));
-  return { g, bones, carpals };
+  const r = makeHandMeshes(THREE, GEO.hand, (g, geo) => addMesh(g, geo, 'hand', 'hands'));
+  r.g.visible = false; scene.add(r.g);
+  return r;
 }
+let handHi = null;   // grupo de ossos da mão a brilhar (escolhido no painel ou no cartão)
 
 let headRigs = [], handRigs = [], bodyRig = null, poseHeadRigs = [];
-let forceLayers = {}, brainPanel = null, lobesWas = null;
+let forceLayers = {}, brainPanel = null, handPanel = null, lobesWas = null;
 const LOBE_IDX = Object.fromEntries(BRAIN_LOBES.map((l, i) => [l.id, i]));
 const LOBE_HINT = [[[2.7, 6.3, 4.6], [-2.7, 6.3, 4.6]], [[4.0, 8.2, -2.4], [-4.0, 8.2, -2.4]], [[5.9, 2.0, 0.6], [-5.9, 2.0, 0.6]], [[0, 4.5, -8.6]], [[0, -0.6, -7.0]], [[0, -1.2, -3.8]]];
 
@@ -631,14 +627,16 @@ function detect(now) {
 
   // mãos
   if (hr) {
-    const hl = [...(hr.landmarks || [])];
+    const hl = [...(hr.landmarks || [])], hd = hr.handedness || hr.handednesses || [];
     if (DEBUG.hand) hl.push(DEBUG.hand.map(([x, y, z]) => ({ x: x / vw, y: y / vh, z: z / vw })));
-    const hitems = hl.map(l => {
+    const hitems = hl.map((l, k) => {
       const raw = new Float32Array(63);
       for (let i = 0; i < 21; i++) { raw[i * 3] = l[i].x * vw; raw[i * 3 + 1] = l[i].y * vh; raw[i * 3 + 2] = l[i].z * vw; }
-      return { raw };
+      const cat = hd[k]?.[0]?.categoryName;
+      return { raw, right: cat ? cat === 'Left' : (DEBUG.handLeft ? false : true) };
     });
     for (const [h, it] of assignSlots(hands, hitems, r => [r[0], r[1]], t)) {
+      h.right = it.right;
       h.lm = h.filt.filter(it.raw, t);
       for (let i = 0; i < 21; i++) h.J[i].set(h.lm[i * 3], -h.lm[i * 3 + 1], -h.lm[i * 3 + 2]);
       h.hs = h.J[0].distanceTo(h.J[9]);
@@ -821,32 +819,12 @@ function bodyTargetsOf(body, opts, out) {
 }
 
 function updateHand(h) {
-  const r = h.rig, hs = h.hs;
-  r.g.visible = S.layers.hands;
-  if (!S.layers.hands) return;
+  const r = h.rig;
+  r.g.visible = S.layers.hands || !!handPanel?.isOpen;
+  if (!r.g.visible) return;
   const armDrawn = bodies.some(b => b.rig?.on && [15, 16].some(w => b.vis[w] > VIS && Math.hypot(h.lm[0] - b.lm[w * 3], h.lm[1] - b.lm[w * 3 + 1]) < vw * 0.12));
-  HAND_BONES.forEach(([a, b, rad, endGap = 0.07], i) => {
-    const A = handPoint(h, a, hv[0]), B = handPoint(h, b, hv[1]);
-    const d = hv[2].subVectors(B, A); const len = d.length(); if (len < 1e-3) return; d.divideScalar(len);
-    const m = r.bones[i];
-    m.visible = !(i >= HAND_BONES.length - 2 && armDrawn);
-    m.position.copy(A).addScaledVector(d, len * 0.07);
-    m.quaternion.setFromUnitVectors(UP, d);
-    const rr = rad * hs;
-    m.scale.set(rr, len * (1 - 0.07 - endGap), rr);
-  });
-  // ossos do pulso (carpos): duas filas
-  const J = h.J, ks = [5, 9, 13, 17];
-  for (let k = 0; k < 4; k++) {
-    const base = hv[3].copy(J[0]).lerp(J[ks[k]], 0.24);
-    for (let row = 0; row < 2; row++) {
-      const m = r.carpals[row * 4 + k];
-      m.position.copy(J[0]).lerp(base, row ? 0.72 : 0.36);
-      if (!row) m.position.lerp(J[1], 0.12);
-      const s = (row ? 0.068 : 0.062) * hs;
-      m.scale.set(s * 1.1, s * 0.9, s);
-    }
-  }
+  layoutHand(THREE, r, h.J, { palmar: h.right === false ? -1 : 1, armHidden: armDrawn });
+  for (const it of r.meshes) { const want = MATS[S.look][it.group === handHi ? 'handHi' : 'hand']; if (it.mesh.material !== want) it.mesh.material = want; }
 }
 
 // ------------------------------------------------------------------ músculos (2D, por cima da cara)
@@ -1083,17 +1061,50 @@ function collectTargets(f, opts = {}) {
   }
   return out;
 }
-function handTargets() {
+const HAND_ITEMS = MAO_INFO.map(i => ({ ...i, cient: i.cient || i.nome, layer: 'hands' }));
+function primaryHand() { let best = null; for (const h of hands) if (h.active && h.lm && h.rig?.g.visible && (!best || h.hs > best.hs)) best = h; return best; }
+function handTargets(opts = {}) {
   const out = [];
-  const h = hands.find(h => h.active);
-  if (!h || !S.layers.hands) return out;
-  const J = h.J, P = (v) => [v.x, -v.y];
-  const mid = (a, b) => [(a.x + b.x) / 2, -(a.y + b.y) / 2];
-  out.push({ kind: 'hand', item: HAND_PARTS[0], id: 'falanges', ...xy(mid(J[10], J[11])) });
-  out.push({ kind: 'hand', item: HAND_PARTS[1], id: 'metacarpos', ...xy(P(hv[4].copy(J[0]).lerp(J[13], 0.62))) });
-  out.push({ kind: 'hand', item: HAND_PARTS[2], id: 'carpos', ...xy(P(hv[5].copy(J[0]).lerp(J[9], 0.14))) });
-  out.push({ kind: 'hand', item: HAND_PARTS[3], id: 'antebraco', ...xy(P(handPoint(h, 'rad0', hv[6]).lerp(handPoint(h, 'rad1', V()), 0.35))) });
+  const detail = !!handPanel?.isOpen;
+  const list = detail || opts.touch ? hands.filter(h => h.active && h.rig?.g.visible) : [primaryHand()].filter(Boolean);
+  if (!list.length || (!S.layers.hands && !detail)) return out;
+  for (const h of list) {
+    h.rig.g.updateMatrixWorld(true);
+    const at = grp => { const p = groupAnchor(THREE, h.rig, grp, hv[4]); return p ? [p.x, -p.y] : null; };
+    if (detail || opts.touch) for (const it of HAND_ITEMS) { const p = at(it.id); if (p) out.push({ kind: 'hand', item: it, id: it.id, h, ...xy(p) }); }
+    else {
+      const add = (k, grp) => { const p = at(grp); if (p) out.push({ kind: 'hand', item: HAND_PARTS[k], id: HAND_PARTS[k].id, ...xy(p) }); };
+      add(0, 'falProx'); add(1, 'metacarpos'); add(2, 'capitato'); if (h.rig.meshes.find(m => m.id === 'radio').mesh.visible) add(3, 'radio');
+    }
+  }
   return out.filter(t => t.x > 0 && t.x < vw && t.y > 0 && t.y < vh);
+}
+// a mão à frente da cara tapa as etiquetas da cara que ficam por trás dela
+function insideHands(x, y) {
+  for (const h of hands) {
+    if (!h.active || !h.lm) continue;
+    let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+    for (let i = 0; i < 21; i++) { const px = h.lm[i * 3], py = h.lm[i * 3 + 1]; if (px < minx) minx = px; if (px > maxx) maxx = px; if (py < miny) miny = py; if (py > maxy) maxy = py; }
+    if (x < minx || x > maxx || y < miny || y > maxy) continue;
+    const pts = []; for (let i = 0; i < 21; i++) pts.push([h.lm[i * 3], h.lm[i * 3 + 1]]);
+    if (inHull(convexHull(pts), x, y)) return true;
+  }
+  return false;
+}
+function convexHull(P) {
+  P = P.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const p of P) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let i = P.length - 1; i >= 0; i--) { const p = P[i]; while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+function inHull(H, x, y) {
+  // alarga o contorno 10% à volta do centro (a mão real é mais larga que os pontos)
+  let cx = 0, cy = 0; for (const p of H) { cx += p[0]; cy += p[1]; } cx /= H.length; cy /= H.length;
+  const Q = H.map(p => [cx + (p[0] - cx) * 1.1, cy + (p[1] - cy) * 1.1]);
+  for (let i = 0; i < Q.length; i++) { const a = Q[i], b = Q[(i + 1) % Q.length]; if ((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]) < 0) return false; }
+  return true;
 }
 const xy = a => ({ x: a[0], y: a[1], fc: 1, layer: 'hands' });
 
@@ -1116,9 +1127,10 @@ function drawLabels(f, st) {
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, lCanvas.width, lCanvas.height);
   const bOn = bodyRig?.on && S.layers.body;
   const hideForQuiz = mode === 'desafio' && ch?.list && ch.phase === 'ask' && ch.list[ch.i]?.mostra;
-  if (!S.labels || (!f && !bOn) || mode === 'objectos' || hideForQuiz) return;
+  const hDetail = !!handPanel?.isOpen, ph = primaryHand();
+  if (!S.labels || (!f && !bOn && !ph) || mode === 'objectos' || hideForQuiz) return;
   const sc = lCanvas.width / vw; ctx.setTransform(sc, 0, 0, sc, 0, 0);
-  let T = [...collectTargets(f), ...handTargets(), ...bodyTargets()].filter(t => !t.extra);
+  let T = hDetail && ph ? handTargets() : [...collectTargets(f).filter(t => !insideHands(t.x, t.y)), ...handTargets(), ...bodyTargets().filter(t => !insideHands(t.x, t.y))].filter(t => !t.extra);
   // um rótulo por parte: o lado mais virado para a câmara
   const best = new Map();
   for (const t of T) { const k = t.kind + t.id; if (!best.has(k) || best.get(k).fc < t.fc) best.set(k, t); }
@@ -1128,10 +1140,14 @@ function drawLabels(f, st) {
   const dens = T.length > 14 ? 0.84 : 1;
   const fs = 15 * u * dens, padX = 9 * u * dens, h = 26 * u * dens, gap = 4 * u * dens;
   ctx.font = `600 ${fs}px Fredoka, "Segoe UI", sans-serif`; ctx.textBaseline = 'middle';
-  const fx = f ? vw - f.lm[168 * 3] : vw - bodyRig.C.x;    // centro da cara (ou do corpo) no ecrã (espelhado)
-  const half = f ? f.faceW * 0.62 + 30 * u : body.w * 0.55;
+  const handFocus = ph && (hDetail || (!f && !bOn));
+  let hcx = 0, hw = 0;
+  if (handFocus) { let a = 1e9, b = -1e9; for (let i = 0; i < 21; i++) { a = Math.min(a, ph.lm[i * 3]); b = Math.max(b, ph.lm[i * 3]); } hcx = (a + b) / 2; hw = b - a; }
+  const fx = handFocus ? vw - hcx : f ? vw - f.lm[168 * 3] : vw - bodyRig.C.x;    // centro da mão, da cara ou do corpo no ecrã (espelhado)
+  const half = handFocus ? hw * 0.55 + 24 * u : f ? f.faceW * 0.62 + 30 * u : body.w * 0.55;
   const cols = { L: [], R: [] };
-  for (const t of T) { t.dx = vw - t.x; t.dy = t.y; (t.dx < fx ? cols.L : cols.R).push(t); }
+  const panelOpen = (brainPanel?.isOpen || handPanel?.isOpen) && cssW > 700;   // o painel tapa a direita: as etiquetas vão para a esquerda
+  for (const t of T) { t.dx = vw - t.x; t.dy = t.y; (panelOpen || t.dx < fx ? cols.L : cols.R).push(t); }
   for (const [side, list] of Object.entries(cols)) {
     list.sort((a, b) => a.dy - b.dy);
     let y = -Infinity;
@@ -1222,9 +1238,13 @@ function showCard(t, say = true) {
   $('#card .c-title').textContent = itNome(it);
   $('#card .c-sci').textContent = it.cient && it.cient !== itNome(it) ? it.cient : '';
   $('#card .c-text').textContent = itFacto(it);
-  const brainy = it.layer === 'brain' && mode !== 'desafio';
-  $('#card .c-more').hidden = !brainy || !!brainPanel?.isOpen; $('#card').dataset.id = t.id;
+  const brainy = it.layer === 'brain' && mode !== 'desafio', handy = t.kind === 'hand' && mode !== 'desafio';
+  const more = $('#card .c-more');
+  more.hidden = !(brainy && !brainPanel?.isOpen) && !(handy && !handPanel?.isOpen);
+  more.textContent = handy ? '🔍 Ver os ossos da mão em detalhe' : '🔍 Ver os lobos em detalhe';
+  $('#card').dataset.id = t.id; $('#card').dataset.kind = t.kind;
   if (brainPanel?.isOpen && LOBE_IDX[t.id] != null) brainPanel.select(LOBE_IDX[t.id], false);
+  if (handPanel?.isOpen && isHandBone(t.id)) handPanel.select(t.id, false);
   $('#card').hidden = false;
   $('#card').style.animation = 'none'; void $('#card').offsetWidth; $('#card').style.animation = '';
   if (say) speak(`${itNome(it)}. ${itFacto(it)}`);
@@ -1254,7 +1274,7 @@ function setMode(m) {
   $$('.modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('#prompt').hidden = true; ch = null; hunt = null; dwell.id = null; hideQuiz();
   $('#card').hidden = true; selected = null;
-  if (m === 'desafio' || m === 'objectos') closeBrainPanel();
+  if (m === 'desafio' || m === 'objectos') { closeBrainPanel(); closeHandPanel(); }
   if (m === 'tocar') {
     S.layers.hands = true; refreshUI();
     promptShow('👆', TXT.tocaIntro, '', null);
@@ -1488,11 +1508,12 @@ function roundOk(x, y, msg = null) {
 }
 function fingerTips() {
   if (DEBUG.tip) return [DEBUG.tip];
-  return hands.filter(h => h.active && h.lm).map(h => [h.lm[8 * 3], h.lm[8 * 3 + 1]]);
+  return hands.filter(h => h.active && h.lm).map(h => { const t = [h.lm[8 * 3], h.lm[8 * 3 + 1]]; t.h = h; return t; });
 }
 function nearestTarget(tips, targets, radius) {
   let best = null, bd = radius;
   for (const tip of tips) for (const t of targets) {
+    if (t.h && tip.h === t.h) continue;   // um dedo não "toca" nos ossos da própria mão
     const d = Math.hypot(tip[0] - t.x, tip[1] - t.y);
     if (d < bd) { bd = d; best = { t, tip, d }; }
   }
@@ -1505,8 +1526,8 @@ function updateInteraction(f0, dt, now) {
   const R = f0 ? f0.faceW * 0.13 : (bodyRig?.on ? body.w * 0.1 : vw * 0.05);
   fxDraw.tips = tips; fxDraw.progress = null; fxDraw.hintAt = null;
 
-  if (mode === 'tocar' && (f0 || bodyRig?.on)) {
-    const targets = [...collectTargets(f0, { touch: true }), ...bodyTargets()];
+  if (mode === 'tocar' && (f0 || bodyRig?.on || hands.filter(h => h.active).length > 1)) {
+    const targets = [...collectTargets(f0, { touch: true }), ...bodyTargets(), ...(S.layers.hands || handPanel?.isOpen ? handTargets({ touch: true }) : [])];
     const hit = nearestTarget(tips, targets, R);
     if (hit) {
       if (dwell.id === hit.t.id + hit.t.kind) dwell.t += dt; else { dwell.id = hit.t.id + hit.t.kind; dwell.t = 0; }
@@ -1660,6 +1681,24 @@ function drawFx(dt, st, now) {
         ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7); ctx.stroke(); ctx.setLineDash([]);
         ctx.strokeStyle = 'rgba(111,227,255,0.35)'; ctx.beginPath(); ctx.arc(cx, cy, rad * (1.15 + 0.1 * pulse), 0, 7); ctx.stroke();
         ctx.fillStyle = '#e8f6ff'; ctx.beginPath(); ctx.arc(cx, cy, 3 * u, 0, 7); ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+  if (handPanel?.isOpen && cssW > 700) {
+    const h = primaryHand();
+    const vr = handPanel.el.querySelector('.bp-view').getBoundingClientRect(), sr = stage.getBoundingClientRect();
+    if (h && vr.width) {
+      const k = vw / sr.width, px = (vr.left - sr.left) * k, py0 = (vr.top - sr.top) * k, py1 = (vr.bottom - sr.top) * k;
+      const p = groupAnchor(THREE, h.rig, 'capitato', hv[4]);
+      const cx = vw - p.x, cy = -p.y, rad = Math.max(14 * u, h.hs * 0.33);
+      if (cx + rad < px - 10 * u) {
+        const pulse = 0.6 + 0.4 * Math.sin(now / 400);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(111,227,255,0.55)'; ctx.lineWidth = 1.5 * u;
+        ctx.beginPath(); ctx.moveTo(cx + rad * 0.2, cy - rad); ctx.lineTo(px, py0); ctx.moveTo(cx + rad * 0.2, cy + rad); ctx.lineTo(px, py1); ctx.stroke();
+        ctx.setLineDash([4 * u, 4 * u]); ctx.strokeStyle = `rgba(220,245,255,${0.6 + 0.3 * pulse})`; ctx.lineWidth = 2 * u;
+        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7); ctx.stroke(); ctx.setLineDash([]);
         ctx.restore();
       }
     }
@@ -2031,6 +2070,7 @@ function frame(nowMs) {
     if (!f.rig) f.rig = headRigs[i];
     if (f.active && f.lm) updateHead(f); else f.rig.g.visible = false;
   });
+  handHi = handPanel?.isOpen && handPanel.selected ? handPanel.selected : (selected && isHandBone(selected.id) && performance.now() < selected.until ? selected.id : null);
   hands.forEach((h, i) => {
     if (!h.rig) h.rig = handRigs[i];
     if (h.active && h.lm) updateHand(h); else h.rig.g.visible = false;
@@ -2066,6 +2106,7 @@ function frame(nowMs) {
   drawTracking();
   drawFx(dt, st, now);
   brainPanel?.render(now);
+  handPanel?.render(now);
   recFrame(now);
 
   // dicas
@@ -2113,9 +2154,9 @@ function composeFrame(g) {
   g.restore();
   g.drawImage(lCanvas, 0, 0, vw, vh);
   g.drawImage(fxCanvas, 0, 0, vw, vh);
-  if (brainPanel?.isOpen) {
-    const sr = stage.getBoundingClientRect(), pr = brainPanel.el.getBoundingClientRect(), k = vw / sr.width;
-    brainPanel.drawInto(g, (pr.left - sr.left) * k, (pr.top - sr.top) * k, pr.width * k, pr.height * k);
+  for (const pnl of [brainPanel, handPanel]) if (pnl?.isOpen) {
+    const sr = stage.getBoundingClientRect(), pr = pnl.el.getBoundingClientRect(), k = vw / sr.width;
+    pnl.drawInto(g, (pr.left - sr.left) * k, (pr.top - sr.top) * k, pr.width * k, pr.height * k);
   }
   g.font = `600 ${Math.round(vh * 0.03)}px Fredoka, sans-serif`; g.fillStyle = 'rgba(111,227,255,0.85)'; g.textBaseline = 'bottom';
   g.fillText('Espelho Raio-X', vh * 0.02, vh * 0.98);
@@ -2273,8 +2314,16 @@ function updateBrainAction(dt, f0) {
   for (const look of ['xray', 'neon']) MATS[look].brain.uniforms.uSpotA.value.set(a);
   brainPanel.setSpots(a, brainAct.active(), ACTIONS);
 }
+function openHandPanel() {
+  if (!handPanel) return;
+  closeBrainPanel();
+  S.layers.hands = true; handPanel.open(); $('#card .c-more').hidden = true; refreshUI();
+}
+function closeHandPanel() { if (handPanel?.isOpen) { handPanel.close(); handHi = null; } }
+function toggleHandPanel() { handPanel?.isOpen ? closeHandPanel() : openHandPanel(); }
 function openBrainPanel(view) {
   if (!brainPanel) return;
+  closeHandPanel();
   S.layers.brain = true; S.brainPanel = true; brainPanel.open(view); $('#card .c-more').hidden = true; refreshUI();
 }
 function closeBrainPanel() { if (S.brainAction) setBrainAction(false); if (brainPanel?.isOpen) { brainPanel.close(); S.brainPanel = false; saveSettings(); } }
@@ -2298,7 +2347,7 @@ function initUI() {
     fps: () => fps, size: () => [vw, vh], gpu: () => (usedGPU ? 'com placa gráfica (GPU)' : 'só processador (CPU)'),
     device: () => { const u = navigator.userAgent; const os = /Windows/.test(u) ? 'Windows' : /Android/.test(u) ? 'Android' : /iPhone|iPad/.test(u) ? 'iOS' : /Mac/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'outro'; const br = (u.match(/(Edg|Chrome|Firefox|Safari)\/(\d+)/) || []).slice(1).join(' '); return `${os} · ${br.replace('Edg', 'Edge')}`; },
     profile: () => profiles.current, speak, toast, saveBlob, ok: sndOk,
-    onStart: () => { setMode('explorar'); closeBrainPanel(); S.layers = { ...PRESETS.ossos }; refreshUI(); },
+    onStart: () => { setMode('explorar'); closeBrainPanel(); closeHandPanel(); S.layers = { ...PRESETS.ossos }; refreshUI(); },
     onStep: id => { if (id === 'corpo') { S.layers.body = true; refreshUI(); } },
   });
   $('#btnCheck').onclick = () => { if (!running) { toast('Liga primeiro a câmara 🎥'); return; } if (window.innerWidth < 900) { S.panel = false; refreshUI(); } check.start(); };
@@ -2315,7 +2364,12 @@ function initUI() {
     refreshUI(); sndTick(); bodyNudge();
   });
   $('#btnBrainDetail').onclick = () => toggleBrainPanel();
-  $('#card .c-more').onclick = () => { const id = $('#card').dataset.id; openBrainPanel(); if (LOBE_IDX[id] != null) brainPanel.select(LOBE_IDX[id], false); };
+  $('#card .c-more').onclick = () => {
+    const id = $('#card').dataset.id;
+    if ($('#card').dataset.kind === 'hand') { openHandPanel(); if (isHandBone(id)) handPanel.select(id, false); return; }
+    openBrainPanel(); if (LOBE_IDX[id] != null) brainPanel.select(LOBE_IDX[id], false);
+  };
+  $('#btnHandDetail').onclick = () => toggleHandPanel();
   $$('.seg[data-set]').forEach(seg => seg.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     setPath(S, seg.dataset.set, b.dataset.val);
@@ -2323,7 +2377,7 @@ function initUI() {
     refreshUI();
   });
   $('#btnProgReset').onclick = () => { S.prog = { max: 1, best: {} }; saveSettings(); toast('Progresso do Desafio recomeçado.'); if (mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); };
-  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); if (el.dataset.set === 'unlockAll' && mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); if (el.dataset.set === 'sci' && brainPanel?.isOpen) brainPanel.refreshText(); });
+  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); if (el.dataset.set === 'unlockAll' && mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); if (el.dataset.set === 'sci') { if (brainPanel?.isOpen) brainPanel.refreshText(); if (handPanel?.isOpen) handPanel.refreshText(); } });
   $$('[data-fit]').forEach(b => b.onclick = () => { S.fit = { ...FIT_PRESETS[b.dataset.fit] }; S.babyTeeth = b.dataset.fit === 'crianca'; refreshUI(); });
   $('#btnFitReset').onclick = () => { S.fit = { ...FIT_PRESETS.adulto }; refreshUI(); };
   $$('.modes button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
@@ -2341,6 +2395,7 @@ function initUI() {
     else if (e.key === 'p' || e.key === 'P') { S.panel = !S.panel; refreshUI(); }
     else if (e.key === 'l' || e.key === 'L') { S.labels = !S.labels; refreshUI(); }
     else if (e.key === 'b' || e.key === 'B') toggleBrainPanel();
+    else if (e.key === 'm' || e.key === 'M') toggleHandPanel();
     else if (e.key === 'Escape') { $('#card').hidden = true; selected = null; }
     else if ('12345'.includes(e.key) && e.key) { S.layers = { ...PRESETS[['ossos', 'corpo', 'cerebro', 'musculos', 'tudo'][+e.key - 1]] }; refreshUI(); }
   });
@@ -2348,7 +2403,7 @@ function initUI() {
   stage.addEventListener('pointermove', e => { pointer = toVid(e); });
   stage.addEventListener('pointerleave', () => { pointer = null; });
   stage.addEventListener('click', e => {
-    if (e.target.closest('#card, #prompt, #quiz, #objSummary, #brainPanel, #check')) return;
+    if (e.target.closest('#card, #prompt, #quiz, #objSummary, #brainPanel, #handPanel, #check')) return;
     const [x0c, y0c] = toVid(e);
     if (mode === 'objectos') {
       const xd0 = vw - x0c;
@@ -2357,12 +2412,12 @@ function initUI() {
         if ((lb && xd0 >= lb[0] && xd0 <= lb[0] + lb[2] && y0c >= lb[1] && y0c <= lb[1] + lb[3]) || (x0c > bx && x0c < bx + bw && y0c > by && y0c < by + bh)) { showCard({ item: objItem(tr.cls), id: 'obj-' + tr.cls, kind: 'obj' }); return; }
       }
     }
-    const f0 = primaryFace(); if (!f0 && !bodyRig?.on) return;
+    const f0 = primaryFace(), ph = primaryHand(); if (!f0 && !bodyRig?.on && !ph) return;
     const [x, y] = toVid(e);
     // clique num rótulo
     const xd = vw - x;
     for (const t of lastLabels) if (t.box && xd >= t.box[0] && xd <= t.box[0] + t.box[2] && y >= t.box[1] && y <= t.box[1] + t.box[3]) { showCard(t); return; }
-    const hit = nearestTarget([[x, y]], [...collectTargets(f0, { touch: true }), ...handTargets(), ...bodyTargets()], f0 ? f0.faceW * 0.16 : body.w * 0.12);
+    const hit = nearestTarget([[x, y]], [...collectTargets(f0, { touch: true }), ...handTargets({ touch: true }), ...bodyTargets()], f0 ? f0.faceW * 0.16 : ph ? ph.hs * 0.14 : body.w * 0.12);
     if (hit) showCard(hit.t);
   });
   refreshUI();
@@ -2379,6 +2434,8 @@ async function boot() {
     headRigs = [makeHeadRig(), makeHeadRig()];
     bodyRig = makeBodyRig();
     poseHeadRigs = [makeHeadRig(), makeHeadRig()];
+    handPanel = createHandPanel(THREE, { geos: GEO.hand, host: stage, sci: () => !!S.sci, speak,
+      onSelect: id => { if (id && !$('#card').hidden && $('#card').dataset.id !== id) $('#card').hidden = true; } });
     brainPanel = createBrainPanel(THREE, { geo: GEO.brain, lobes: BRAIN_LOBES, overview: BRAIN_OVERVIEW, host: stage, sci: () => !!S.sci, speak,
       onSelect: i => { if (i >= 0 && !$('#card').hidden && LOBE_IDX[$('#card').dataset.id] !== i) $('#card').hidden = true; },
       onClose: () => { S.brainPanel = false; if (S.brainAction) setBrainAction(false); saveSettings(); },
@@ -2463,4 +2520,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { get check() { return check; }, S, get brainPanel() { return brainPanel; }, get profiles() { return profiles; }, brainAct, setBrainAction, measureActivity: () => measureActivity(1 / 30, primaryFace()), faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
+window.espelho = { get handPanel() { return handPanel; }, handTargets, get check() { return check; }, S, get brainPanel() { return brainPanel; }, get profiles() { return profiles; }, brainAct, setBrainAction, measureActivity: () => measureActivity(1 / 30, primaryFace()), faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };

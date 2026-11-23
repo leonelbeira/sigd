@@ -63,7 +63,7 @@ export const HAND_PARTS = [
   { id: 'metacarpos', nome: 'Ossos da palma', cient: 'Metacarpos', emoji: '✋',
     facto: 'São os 5 ossos compridos da palma da mão. Cada mão tem 27 ossos ao todo!' },
   { id: 'carpos', nome: 'Ossos do pulso', cient: 'Carpos', emoji: '🤚',
-    facto: 'No pulso há 8 ossinhos que deixam a mão dobrar e rodar.' },
+    facto: 'No pulso há 8 ossinhos que deixam a mão dobrar e rodar. Abre o detalhe da mão para ver o nome de cada um!' },
   { id: 'antebraco', nome: 'Ossos do braço', cient: 'Rádio e cúbito (ulna)', emoji: '💪',
     facto: 'No antebraço há dois ossos lado a lado. Quando rodas a mão, um roda à volta do outro!' },
 ];
