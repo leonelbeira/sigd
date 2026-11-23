@@ -63,7 +63,7 @@
           <button class="c-close" aria-label="Fechar">×</button>
           <div class="c-head"><span class="c-emoji"></span><div><h2 class="c-title"></h2><div class="c-sci"></div></div></div>
           <p class="c-text"></p>
-          <button class="c-say">🔊 Ouvir outra vez</button>
+          <div class="c-btns"><button class="c-say">🔊 Ouvir outra vez</button><button class="c-more" hidden>🔍 Ver os lobos em detalhe</button></div>
         </div>
 
         <div id="toast" hidden></div>
@@ -107,6 +107,8 @@
         </div>
         <div class="chips" id="layerChips"></div>
         <label class="row check"><input type="checkbox" data-set="labels"> Mostrar os nomes</label>
+        <label class="row check"><input type="checkbox" data-set="lobes"> Cérebro com as cores dos lobos</label>
+        <button id="btnBrainDetail" class="ghost wide">🧠 Detalhe do cérebro: lobos e funções <kbd>B</kbd></button>
       </section>
 
       <section>

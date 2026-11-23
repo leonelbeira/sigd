@@ -3,7 +3,8 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
 import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker, ObjectDetector } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
 import { CANON, MIRROR } from './canon.js';
-import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS } from './parts.js';
+import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS, BRAIN_LOBES, BRAIN_OVERVIEW, LOBE_PARTS } from './parts.js';
+import { addLobeAttributes, createBrainPanel } from './cerebro.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -48,7 +49,7 @@ async function loadModel(url, sha) {
 const DEFAULTS = {
   layers: { skull: true, teeth: true, spine: true, brain: false, eyes: true, muscles: false, hands: true, body: false },
   babyTeeth: false, level: 'exploradores',
-  objXray: true, objEN: false, objMov: false, prog: { max: 1, best: {} }, unlockAll: false,
+  objXray: true, objEN: false, objMov: false, prog: { max: 1, best: {} }, unlockAll: false, lobes: true, brainPanel: false,
   labels: true, look: 'xray', bright: 1, realMe: 0.45, anat: 1,
   reveal: 'all', lens: 0.26, feather: 0.25,
   fit: { size: 1, w: 1, h: 1, d: 1, x: 0, y: 0, z: 0 },
@@ -126,17 +127,30 @@ scene.add(sun);
 const hex3 = h => { const c = parseInt(h.slice(1), 16); return new THREE.Vector3(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255); };
 const XRAY_VS = `
 varying vec3 vN; varying vec3 vW;
-void main(){ vN = normalize(normalMatrix * normal); vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
+#ifdef LOBES
+attribute vec3 aCol; attribute float aLobe; varying vec3 vCol; varying float vLobe;
+#endif
+void main(){
+#ifdef LOBES
+  vCol = aCol; vLobe = aLobe;
+#endif
+  vN = normalize(normalMatrix * normal); vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
 const XRAY_FS = `
 uniform vec3 uColor; uniform float uPow, uFill, uGain, uOpacity, uTime, uNeon, uHue;
 varying vec3 vN; varying vec3 vW;
+#ifdef LOBES
+uniform float uLobes, uHi; varying vec3 vCol; varying float vLobe;
+#endif
 vec3 hsv(float h, float s, float v){ vec3 k = clamp(abs(mod(h*6.0+vec3(0.,4.,2.),6.)-3.)-1.,0.,1.); return v*mix(vec3(1.),k,s); }
 void main(){
   float f = 1.0 - abs(normalize(vN).z);
   float rim = pow(f, uPow);
-  vec3 col = uColor;
-  if (uNeon > 0.5) col = hsv(fract(uHue + vW.y*0.0016 + uTime*0.12), 0.75, 1.0);
-  vec3 c = col * (rim * 1.25 + uFill) * uGain * uOpacity;
+  vec3 col = uColor; float k = 1.0, fill = uFill; bool lob = false;
+#ifdef LOBES
+  if (uLobes > 0.5) { col = vCol; lob = true; fill *= 1.8; if (uHi > -0.5) k = abs(vLobe - uHi) < 0.5 ? 1.9 + 0.3 * sin(uTime * 5.0) : 0.25; }
+#endif
+  if (uNeon > 0.5 && !lob) col = hsv(fract(uHue + vW.y*0.0016 + uTime*0.12), 0.75, 1.0);
+  vec3 c = col * (rim * 1.25 + fill) * uGain * uOpacity * k;
   c = min(c, vec3(1.0));
   gl_FragColor = vec4(c, max(c.r, max(c.g, c.b)));
 }`;
@@ -162,8 +176,9 @@ for (const [k, [cx, cs, pw, fill, hue]] of Object.entries(KINDS)) {
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
       blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
       uniforms: { uColor: { value: hex3(cx) }, uPow: { value: pw }, uFill: { value: fill }, uGain: { value: 1 }, uOpacity: { value: 1 },
-        uTime: { value: 0 }, uNeon: { value: look === 'neon' ? 1 : 0 }, uHue: { value: hue } },
+        uTime: { value: 0 }, uNeon: { value: look === 'neon' ? 1 : 0 }, uHue: { value: hue }, uLobes: { value: 0 }, uHi: { value: -1 } },
     });
+    if (k === 'brain') m.defines = { LOBES: '' };
     MATS[look][k] = m;
   }
   const sm = new THREE.MeshStandardMaterial({ color: cs, roughness: k === 'tooth' ? 0.35 : 0.62, metalness: 0, side: THREE.FrontSide });
@@ -210,6 +225,7 @@ async function loadAnatomy() {
     g.computeVertexNormals();
     GEO[name] = g;
   }
+  addLobeAttributes(THREE, GEO.brain, BRAIN_LOBES);
   GEO.eyeball = new THREE.SphereGeometry(1.15, 32, 22);
   GEO.irisRing = new THREE.TorusGeometry(0.5, 0.07, 8, 40);
   GEO.irisDisc = new THREE.CircleGeometry(0.5, 32);
@@ -269,6 +285,9 @@ function makeHandRig() {
 }
 
 let headRigs = [], handRigs = [], bodyRig = null, poseHeadRigs = [];
+let forceLayers = {}, brainPanel = null, lobesWas = null;
+const LOBE_IDX = Object.fromEntries(BRAIN_LOBES.map((l, i) => [l.id, i]));
+const LOBE_HINT = [[[2.7, 6.3, 4.6], [-2.7, 6.3, 4.6]], [[4.0, 8.2, -2.4], [-4.0, 8.2, -2.4]], [[5.9, 2.0, 0.6], [-5.9, 2.0, 0.6]], [[0, 4.5, -8.6]], [[0, -0.6, -7.0]], [[0, -1.2, -3.8]]];
 
 // ================================================================== CORPO (esqueleto com o tracking do corpo)
 // Referencial do tronco (cm): origem a meio dos ombros, x = esquerda da pessoa, y = cima, z = frente; ombros em x = ±18.
@@ -670,7 +689,7 @@ function updateHead(f) {
     r.eyes[e].quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), d);
   }
   r.g.visible = true;
-  for (const [layer, list] of Object.entries(r.layer)) for (const m of list) m.visible = !!S.layers[layer] && (m.userData.kid === undefined || m.userData.kid === !!S.babyTeeth);
+  for (const [layer, list] of Object.entries(r.layer)) for (const m of list) m.visible = !!(forceLayers[layer] ?? S.layers[layer]) && (m.userData.kid === undefined || m.userData.kid === !!S.babyTeeth);
 }
 const hv = Array.from({ length: 8 }, V);
 function handPoint(h, key, out) {
@@ -1035,6 +1054,15 @@ function collectTargets(f, opts = {}) {
       out.push({ kind: 'part', item: part, id: part.id, x, y, fc: 1, layer: part.layer, extra: true });
     }
   }
+  if (opts.touch && S.lobes && S.layers.brain) {
+    for (let i = out.length - 1; i >= 0; i--) if (out[i].id === 'cerebro') out.splice(i, 1);   // com os lobos, toca-se num lobo
+    for (const part of LOBE_PARTS) for (const s of [1, -1]) {
+      const lx = part.a[0] * s, fc = facing(p, lx, part.a[2]);
+      if (fc < -0.1) continue;
+      const [x, y] = projRig(r, lx, part.a[1], part.a[2]);
+      out.push({ kind: 'part', item: part, id: part.id, x, y, fc, layer: 'brain', side: s });
+    }
+  }
   if ((S.layers.muscles || opts.all) && f.mgeo) {
     for (const m of MUSCLES) for (const sd of ['R', 'L', 'C']) {
       const g = f.mgeo[m.id + sd]; if (!g) continue;
@@ -1065,7 +1093,7 @@ function primaryFace() {
 
 // ------------------------------------------------------------------ etiquetas
 const itNome = it => (S.babyTeeth && it.nomeCrianca) ? it.nomeCrianca : it.nome;
-const itFacto = it => (S.babyTeeth && it.factoCrianca) ? it.factoCrianca : it.facto;
+const itFacto = it => (S.babyTeeth && it.factoCrianca) ? it.factoCrianca : (S.sci && it.factoCient) ? it.factoCient : it.facto;
 function labelText(t) {
   const it = { ...t.item, nome: itNome(t.item) };
   if (S.sci) return it.cient && it.cient !== it.nome ? `${it.nome} · ${it.cient}` : it.nome;
@@ -1182,6 +1210,9 @@ function showCard(t, say = true) {
   $('#card .c-title').textContent = itNome(it);
   $('#card .c-sci').textContent = it.cient && it.cient !== itNome(it) ? it.cient : '';
   $('#card .c-text').textContent = itFacto(it);
+  const brainy = it.layer === 'brain' && mode !== 'desafio';
+  $('#card .c-more').hidden = !brainy || !!brainPanel?.isOpen; $('#card').dataset.id = t.id;
+  if (brainPanel?.isOpen && LOBE_IDX[t.id] != null) brainPanel.select(LOBE_IDX[t.id], false);
   $('#card').hidden = false;
   $('#card').style.animation = 'none'; void $('#card').offsetWidth; $('#card').style.animation = '';
   if (say) speak(`${itNome(it)}. ${itFacto(it)}`);
@@ -1211,6 +1242,7 @@ function setMode(m) {
   $$('.modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('#prompt').hidden = true; ch = null; hunt = null; dwell.id = null; hideQuiz();
   $('#card').hidden = true; selected = null;
+  if (m === 'desafio' || m === 'objectos') closeBrainPanel();
   if (m === 'tocar') {
     S.layers.hands = true; refreshUI();
     promptShow('👆', TXT.tocaIntro, '', null);
@@ -1311,6 +1343,11 @@ function buildRounds(L) {
       const opts = shuffle([m, ...shuffle(MUSCLES.filter(x => x !== m)).slice(0, 2)]);
       return { tipo: 'quiz', mostra: m.id, mostraKind: 'muscle', alvo: m.id, q: { p: 'Que músculo é este?', o: opts.map(x => x.cient), c: opts.indexOf(m), explica: m.facto }, txt: 'Que músculo está a brilhar? Aponta para a resposta.', emoji: '💪', key: 'm' + m.id };
     }
+    if (k === 'qualLobo') {
+      const lb = pick(BRAIN_LOBES, x => 'b' + x.id), idx = BRAIN_LOBES.indexOf(lb);
+      const opts = shuffle([lb, ...shuffle(BRAIN_LOBES.filter(x => x !== lb)).slice(0, 2)]);
+      return { tipo: 'quiz', mostra: lb.id, mostraKind: 'lobe', lobeIdx: idx, q: { p: 'Que parte do cérebro é esta?', o: opts.map(x => x.nome), c: opts.indexOf(lb), explica: L.cient ? lb.funcaoCient : lb.funcao }, txt: 'Que parte do cérebro está a brilhar? Aponta para a resposta.', emoji: '🧠', key: 'b' + lb.id };
+    }
     if (k === 'marco') {
       const lm = pick(LANDMARKS, x => 'k' + x.id), side = lm.par ? (Math.random() < 0.5 ? 1 : -1) : null;
       const art = FEM.has(lm.id) ? 'na tua' : 'no teu';
@@ -1403,10 +1440,11 @@ function showQuiz(q) {
 function placeQuiz() {
   const pr = $('#prompt');
   if (matchMedia('(max-width: 700px)').matches) { quizEl.style.top = 'auto'; quizEl.style.bottom = pr.hidden ? '8px' : `${innerHeight - pr.getBoundingClientRect().top + 8}px`; return; }
+  if (quizEl.dataset.low) { quizEl.style.top = 'auto'; quizEl.style.bottom = '16px'; return; }
   quizEl.style.bottom = '';
   quizEl.style.top = pr.hidden ? '' : `${Math.max(pr.offsetTop + pr.offsetHeight + 14, quizEl.parentElement.clientHeight * 0.24)}px`;
 }
-function hideQuiz() { quizEl.hidden = true; quizEl.innerHTML = ''; }
+function hideQuiz() { quizEl.hidden = true; quizEl.innerHTML = ''; quizEl.dataset.low = ''; quizEl.lowT = 0; }
 quizEl.addEventListener('click', e => { const b = e.target.closest('button'); if (b) answerQuiz(+b.dataset.i); });
 function answerQuiz(i) {
   if (!ch || ch.phase !== 'ask') return;
@@ -1501,8 +1539,16 @@ function updateInteraction(f0, dt, now) {
           selected = { id: c.mostra, until: now + 400 };
           let anchors = [];
           if (c.mostraKind === 'part') anchors = collectTargets(f0, { all: true }).filter(t => t.id === c.mostra && t.kind === 'part' && !t.extra);
+          else if (c.mostraKind === 'lobe') anchors = f0?.rig ? LOBE_HINT[c.lobeIdx].map(a => { const [x, y] = projRig(f0.rig, ...a); return { x, y }; }) : [];
           else if (f0?.mgeo) anchors = Object.entries(f0.mgeo).filter(([k]) => k.startsWith(c.mostra)).map(([, g]) => ({ x: g.c[0], y: g.c[1] }));
           fxDraw.hintAt = anchors;
+          if (anchors.length && now - (quizEl.lowT || 0) > 1000) {
+            quizEl.lowT = now;
+            const sr0 = stage.getBoundingClientRect(), qTop = $('#prompt').offsetTop + $('#prompt').offsetHeight;
+            const qBot = qTop + 14 + (quizEl.offsetHeight || 90) + 24;
+            const low = anchors.some(a => { const y = a.y / vh * sr0.height; return y > qTop - 10 && y < qBot; }) ? '1' : '';
+            if ((quizEl.dataset.low || '') !== low) { quizEl.dataset.low = low; placeQuiz(); }
+          }
         }
         const sr = stage.getBoundingClientRect();
         let hot = -1;
@@ -1577,6 +1623,29 @@ function drawFx(dt, st, now) {
     const k = (now / 600) % 1;
     ctx.strokeStyle = `rgba(125,255,168,${1 - k})`; ctx.lineWidth = 3 * u;
     ctx.beginPath(); ctx.arc(vw - t.x, t.y, (10 + 30 * k) * u, 0, 7); ctx.stroke();
+  }
+  // lupa no cérebro ligada ao painel de detalhe (como numa ilustração de anatomia)
+  if (brainPanel?.isOpen && (S.layers.brain || forceLayers.brain) && cssW > 700) {
+    const f = primaryFace(), rig = f?.rig?.g.visible ? f.rig : bodies.find(b => b.head?.g.visible)?.head;
+    const vr = brainPanel.el.querySelector('.bp-view').getBoundingClientRect(), sr = stage.getBoundingClientRect();
+    if (rig && vr.width) {
+      const k = vw / sr.width, px = (vr.left - sr.left) * k, py0 = (vr.top - sr.top) * k, py1 = (vr.bottom - sr.top) * k;
+      let best = null;
+      for (const sgn of [1, -1]) { const [x, y] = projRig(rig, sgn * 5.0, 4.4, -1.0); const sx = vw - x; if (!best || sx > best[0]) best = [sx, y]; }
+      const [r0] = projRig(rig, 0, 4.4, -1.0), [r1] = projRig(rig, 1.9, 4.4, -1.0);
+      const rad = Math.max(10 * u, Math.abs(r1 - r0));
+      if (best[0] + rad < px - 10 * u) {
+        const [cx, cy] = best, pulse = 0.6 + 0.4 * Math.sin(now / 400);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(111,227,255,0.55)'; ctx.lineWidth = 1.5 * u;
+        ctx.beginPath(); ctx.moveTo(cx + rad * 0.2, cy - rad); ctx.lineTo(px, py0); ctx.moveTo(cx + rad * 0.2, cy + rad); ctx.lineTo(px, py1); ctx.stroke();
+        ctx.setLineDash([4 * u, 4 * u]); ctx.strokeStyle = `rgba(220,245,255,${0.6 + 0.3 * pulse})`; ctx.lineWidth = 2 * u;
+        ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+        ctx.strokeStyle = 'rgba(111,227,255,0.35)'; ctx.beginPath(); ctx.arc(cx, cy, rad * (1.15 + 0.1 * pulse), 0, 7); ctx.stroke();
+        ctx.fillStyle = '#e8f6ff'; ctx.beginPath(); ctx.arc(cx, cy, 3 * u, 0, 7); ctx.fill();
+        ctx.restore();
+      }
+    }
   }
   // confetti
   parts = parts.filter(q => (q.life -= dt) > 0);
@@ -1928,6 +1997,17 @@ function frame(nowMs) {
   // materiais
   for (const look of ['xray', 'neon']) for (const m of Object.values(MATS[look])) { m.uniforms.uTime.value = t; m.uniforms.uGain.value = S.bright; m.uniforms.uOpacity.value = S.anat; }
 
+  // lobos do cérebro: cores e destaque
+  const crr = mode === 'desafio' && ch && ch.list && ch.phase !== 'end' ? ch.list[ch.i] : null;
+  forceLayers = crr?.mostraKind === 'lobe' ? { brain: true, skull: false, teeth: false, spine: false } : {};   // na ronda dos lobos o crânio sai da frente
+  const lobesOn = !!S.lobes || !!forceLayers.brain;
+  let hi = -1;
+  if (crr?.mostraKind === 'lobe' && ch.phase === 'ask') hi = crr.lobeIdx;
+  else if (brainPanel?.isOpen && brainPanel.selected >= 0) hi = brainPanel.selected;
+  else if (selected && LOBE_IDX[selected.id] != null && LOBE_PARTS.some(l => l.id === selected.id)) hi = LOBE_IDX[selected.id];
+  for (const look of ['xray', 'neon']) { const u = MATS[look].brain.uniforms; u.uLobes.value = lobesOn ? 1 : 0; u.uHi.value = hi; }
+  if (lobesWas !== lobesOn) { lobesWas = lobesOn; const sm = MATS.solid.brain; sm.vertexColors = lobesOn; sm.color.set(lobesOn ? '#ffffff' : KINDS.brain[1]); sm.needsUpdate = true; }
+
   // cabeças
   faces.forEach((f, i) => {
     if (!f.rig) f.rig = headRigs[i];
@@ -1965,6 +2045,7 @@ function frame(nowMs) {
   if (mode === 'objectos') { drawObjLabels(t, st); updateObjMode(t, now, dt); } else $('#objSummary').hidden = true;
   drawTracking();
   drawFx(dt, st, now);
+  brainPanel?.render(now);
   recFrame(now);
 
   // dicas
@@ -2012,6 +2093,10 @@ function composeFrame(g) {
   g.restore();
   g.drawImage(lCanvas, 0, 0, vw, vh);
   g.drawImage(fxCanvas, 0, 0, vw, vh);
+  if (brainPanel?.isOpen) {
+    const sr = stage.getBoundingClientRect(), pr = brainPanel.el.getBoundingClientRect(), k = vw / sr.width;
+    brainPanel.drawInto(g, (pr.left - sr.left) * k, (pr.top - sr.top) * k, pr.width * k, pr.height * k);
+  }
   g.font = `600 ${Math.round(vh * 0.03)}px Fredoka, sans-serif`; g.fillStyle = 'rgba(111,227,255,0.85)'; g.textBaseline = 'bottom';
   g.fillText('Espelho Raio-X', vh * 0.02, vh * 0.98);
 }
@@ -2085,6 +2170,12 @@ function refreshUI() {
   saveSettings();
   requestAnimationFrame(layout);
 }
+function openBrainPanel(view) {
+  if (!brainPanel) return;
+  S.layers.brain = true; S.brainPanel = true; brainPanel.open(view); $('#card .c-more').hidden = true; refreshUI();
+}
+function closeBrainPanel() { if (brainPanel?.isOpen) { brainPanel.close(); S.brainPanel = false; saveSettings(); } }
+function toggleBrainPanel() { brainPanel?.isOpen ? closeBrainPanel() : openBrainPanel(); }
 function bodyNudge() {
   if (!S.layers.body) return;
   setTimeout(() => { if (S.layers.body && running && !bodyRig?.on) toast(TXT.semCorpo, 3500); }, 5000);
@@ -2094,7 +2185,13 @@ function initUI() {
   const chips = $('#layerChips');
   chips.innerHTML = Object.entries(LAYERS).map(([k, l]) => `<button class="chip" data-layer="${k}" style="--c:${l.cor}"><i></i>${l.nome}</button>`).join('');
   chips.onclick = e => { const b = e.target.closest('.chip'); if (!b) return; S.layers[b.dataset.layer] = !S.layers[b.dataset.layer]; refreshUI(); if (b.dataset.layer === 'body') bodyNudge(); };
-  $$('[data-preset]').forEach(b => b.onclick = () => { S.layers = { ...PRESETS[b.dataset.preset] }; refreshUI(); sndTick(); bodyNudge(); });
+  $$('[data-preset]').forEach(b => b.onclick = () => {
+    S.layers = { ...PRESETS[b.dataset.preset] };
+    if (b.dataset.preset === 'cerebro' && mode !== 'objectos' && mode !== 'desafio') openBrainPanel(); else if (!S.layers.brain) closeBrainPanel();
+    refreshUI(); sndTick(); bodyNudge();
+  });
+  $('#btnBrainDetail').onclick = () => toggleBrainPanel();
+  $('#card .c-more').onclick = () => { const id = $('#card').dataset.id; openBrainPanel(); if (LOBE_IDX[id] != null) brainPanel.select(LOBE_IDX[id], false); };
   $$('.seg[data-set]').forEach(seg => seg.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     setPath(S, seg.dataset.set, b.dataset.val);
@@ -2102,7 +2199,7 @@ function initUI() {
     refreshUI();
   });
   $('#btnProgReset').onclick = () => { S.prog = { max: 1, best: {} }; saveSettings(); toast('Progresso do Desafio recomeçado.'); if (mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); };
-  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); if (el.dataset.set === 'unlockAll' && mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); });
+  $$('input[data-set]').forEach(el => el.oninput = () => { setPath(S, el.dataset.set, el.type === 'checkbox' ? el.checked : parseFloat(el.value)); refreshUI(); if (el.dataset.set === 'unlockAll' && mode === 'desafio' && (!ch || ch.phase === 'end')) chooseLevel(); if (el.dataset.set === 'sci' && brainPanel?.isOpen) brainPanel.refreshText(); });
   $$('[data-fit]').forEach(b => b.onclick = () => { S.fit = { ...FIT_PRESETS[b.dataset.fit] }; S.babyTeeth = b.dataset.fit === 'crianca'; refreshUI(); });
   $('#btnFitReset').onclick = () => { S.fit = { ...FIT_PRESETS.adulto }; refreshUI(); };
   $$('.modes button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
@@ -2119,6 +2216,7 @@ function initUI() {
     else if (e.key === 'v' || e.key === 'V') toggleRec();
     else if (e.key === 'p' || e.key === 'P') { S.panel = !S.panel; refreshUI(); }
     else if (e.key === 'l' || e.key === 'L') { S.labels = !S.labels; refreshUI(); }
+    else if (e.key === 'b' || e.key === 'B') toggleBrainPanel();
     else if (e.key === 'Escape') { $('#card').hidden = true; selected = null; }
     else if ('12345'.includes(e.key) && e.key) { S.layers = { ...PRESETS[['ossos', 'corpo', 'cerebro', 'musculos', 'tudo'][+e.key - 1]] }; refreshUI(); }
   });
@@ -2126,7 +2224,7 @@ function initUI() {
   stage.addEventListener('pointermove', e => { pointer = toVid(e); });
   stage.addEventListener('pointerleave', () => { pointer = null; });
   stage.addEventListener('click', e => {
-    if (e.target.closest('#card, #prompt, #quiz, #objSummary')) return;
+    if (e.target.closest('#card, #prompt, #quiz, #objSummary, #brainPanel')) return;
     const [x0c, y0c] = toVid(e);
     if (mode === 'objectos') {
       const xd0 = vw - x0c;
@@ -2157,6 +2255,10 @@ async function boot() {
     headRigs = [makeHeadRig(), makeHeadRig()];
     bodyRig = makeBodyRig();
     poseHeadRigs = [makeHeadRig(), makeHeadRig()];
+    brainPanel = createBrainPanel(THREE, { geo: GEO.brain, lobes: BRAIN_LOBES, overview: BRAIN_OVERVIEW, host: stage, sci: () => !!S.sci, speak,
+      onSelect: i => { if (i >= 0 && !$('#card').hidden && LOBE_IDX[$('#card').dataset.id] !== i) $('#card').hidden = true; },
+      onClose: () => { S.brainPanel = false; saveSettings(); } });
+    if (S.brainPanel) brainPanel.open();
     handRigs = [makeHandRig(), makeHandRig()];
     applyLook();
     await loadVision(m => (loadMsg.textContent = m));
@@ -2236,4 +2338,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { S, faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
+window.espelho = { S, get brainPanel() { return brainPanel; }, faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };

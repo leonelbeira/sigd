@@ -408,3 +408,51 @@ export const QUIZ_MAIS = [
   { d: 4, p: 'Ptose com o olho "para baixo e para fora" sugere lesão do…', o: ['Abducente (VI)', 'Oculomotor (III)', 'Facial (VII)'], c: 1, explica: 'Do oculomotor (III): ficam a actuar só o recto lateral (VI) e o oblíquo superior (IV).' },
   { d: 4, p: 'Que artéria se palpa habitualmente no pescoço para avaliar o pulso?', o: ['Vertebral', 'Subclávia', 'Carótida comum'], c: 2, explica: 'A carótida comum, à frente do esternocleidomastóideo.' },
 ];
+
+// ================================================================== DETALHE DO CÉREBRO (lobos e funções)
+// A ordem é o índice usado no modelo 3D (atributo aLobe). cor = cor do lobo nas duas vistas.
+export const BRAIN_LOBES = [
+  { id: 'loboFrontal', nome: 'Lobo frontal', cient: 'Lobo frontal', cor: '#b25bff', emoji: '🧭',
+    funcao: 'Planear, decidir, controlar os movimentos, a fala e o comportamento.',
+    funcaoCient: 'Córtex motor (giro pré-central), área de Broca (produção da fala) e córtex pré-frontal (planeamento, atenção e controlo do comportamento).' },
+  { id: 'loboParietal', nome: 'Lobo parietal', cient: 'Lobo parietal', cor: '#3a78ff', emoji: '✋',
+    funcao: 'Sentir o toque, a dor e a temperatura, e saber onde está cada parte do corpo.',
+    funcaoCient: 'Córtex somatossensitivo (giro pós-central), integração sensorial e noção do espaço e do próprio corpo.' },
+  { id: 'loboTemporal', nome: 'Lobo temporal', cient: 'Lobo temporal', cor: '#27d6e8', emoji: '👂',
+    funcao: 'Ouvir, guardar memórias, sentir emoções e reconhecer vozes e caras.',
+    funcaoCient: 'Córtex auditivo, área de Wernicke (compreensão da linguagem), hipocampo (memória) e amígdala (emoções).' },
+  { id: 'loboOccipital', nome: 'Lobo occipital', cient: 'Lobo occipital', cor: '#ffc83a', emoji: '👁️',
+    funcao: 'É o principal centro da visão: transforma o que os olhos vêem em imagens.',
+    funcaoCient: 'Córtex visual primário (V1), à volta da fissura calcarina, e áreas visuais de associação.' },
+  { id: 'cerebelo', nome: 'Cerebelo', cient: 'Cerebelo', cor: '#ff70d0', emoji: '🚲',
+    funcao: 'Coordena os movimentos, o equilíbrio e a precisão.',
+    funcaoCient: 'Coordenação, equilíbrio, tónus e aprendizagem motora; compara o movimento planeado com o que os músculos e o ouvido interno informam.' },
+  { id: 'tronco', nome: 'Tronco encefálico', cient: 'Tronco encefálico (mesencéfalo, ponte e bulbo)', cor: '#47e472', emoji: '🫁',
+    funcao: 'Liga o cérebro à medula espinal e controla funções vitais: respirar, o bater do coração e o sono.',
+    funcaoCient: 'Mesencéfalo, ponte e bulbo raquidiano: centros respiratório e cardiovascular, vigília e núcleos de 10 dos 12 nervos cranianos (III a XII).' },
+];
+export const BRAIN_OVERVIEW = { nome: 'Cérebro', cor: '#e08bff',
+  funcao: 'O centro de controlo do corpo e da mente: junta o que sentes, pensas, lembras e fazes.',
+  funcaoCient: 'Dois hemisférios cerebrais com córtex dividido em lobos; cada hemisfério controla sobretudo o lado oposto do corpo.' };
+// pontos onde se pode tocar na cabeça para ver cada lobo (referencial da cabeça, cm)
+export const LOBE_PARTS = [
+  { id: 'loboFrontal', a: [2.7, 6.3, 4.6], par: true },
+  { id: 'loboParietal', a: [4.0, 8.2, -2.4], par: true },
+  { id: 'loboTemporal', a: [5.9, 2.4, 0.9], par: true },
+].map(p => { const L = BRAIN_LOBES.find(l => l.id === p.id); return { ...p, layer: 'brain', lobo: true, nome: L.nome, cient: L.cient, emoji: L.emoji, facto: L.funcao, factoCient: L.funcaoCient }; });
+
+QUIZ_MAIS.push(
+  { d: 2, p: 'Que lobo do cérebro trata sobretudo da visão?', o: ['Frontal', 'Occipital', 'Temporal'], c: 1, explica: 'O lobo occipital, na parte de trás da cabeça — longe dos olhos!' },
+  { d: 2, p: 'Que parte do encéfalo controla a respiração e o bater do coração?', o: ['Cerebelo', 'Lobo frontal', 'Tronco encefálico'], c: 2, explica: 'O tronco encefálico, que liga o cérebro à medula espinal.' },
+  { d: 2, p: 'Ouvir e reconhecer vozes é sobretudo trabalho do lobo…', o: ['Temporal', 'Parietal', 'Occipital'], c: 0, explica: 'Do lobo temporal, que fica por cima das orelhas.' },
+  { d: 3, p: 'A área de Broca, ligada à produção da fala, fica no lobo…', o: ['Temporal', 'Frontal', 'Parietal'], c: 1, explica: 'Frontal (giro frontal inferior, normalmente no hemisfério esquerdo).' },
+  { d: 3, p: 'O giro pós-central (sensibilidade do corpo) pertence ao lobo…', o: ['Parietal', 'Frontal', 'Occipital'], c: 0, explica: 'Parietal. O giro pré-central, motor, fica no lobo frontal.' },
+  { d: 3, p: 'Que sulco separa o lobo frontal do lobo parietal?', o: ['Sulco lateral (de Sylvius)', 'Sulco central (de Rolando)', 'Sulco calcarino'], c: 1, explica: 'O sulco central, de Rolando. O lateral separa o lobo temporal.' },
+  { d: 3, p: 'O hipocampo, essencial para formar memórias, fica no lobo…', o: ['Occipital', 'Frontal', 'Temporal'], c: 2, explica: 'Temporal, na sua face medial.' },
+  { d: 4, p: 'Fala fluente mas sem sentido e má compreensão (afasia de Wernicke) sugere lesão do lobo…', o: ['Frontal', 'Temporal', 'Occipital'], c: 1, explica: 'Temporal posterior (área de Wernicke), em geral no hemisfério esquerdo.' },
+  { d: 4, p: 'Um AVC no lobo occipital esquerdo provoca habitualmente…', o: ['Hemianopsia homónima direita', 'Cegueira do olho esquerdo', 'Hemianopsia bitemporal'], c: 0, explica: 'Perde-se o campo visual direito dos dois olhos (hemianopsia homónima direita).' },
+  { d: 4, p: 'Ataxia e dismetria do braço direito sugerem lesão do…', o: ['Hemisfério cerebeloso direito', 'Hemisfério cerebeloso esquerdo', 'Lobo occipital'], c: 0, explica: 'O cerebelo actua sobre o mesmo lado do corpo: lesão cerebelosa direita, sintomas à direita.' },
+);
+// "Que parte do cérebro é esta?" nos níveis 7 e 12
+LADDER[6].mix.push(['qualLobo']);
+LADDER[11].mix.push(['qualLobo']);
