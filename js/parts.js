@@ -456,3 +456,5 @@ QUIZ_MAIS.push(
 // "Que parte do cérebro é esta?" nos níveis 7 e 12
 LADDER[6].mix.push(['qualLobo']);
 LADDER[11].mix.push(['qualLobo']);
+// testes das caretas (usados também na verificação guiada)
+export const TESTES = { SMILE, EYES, BROWS, JAW, KISS, ANGRY, SAD };

@@ -49,11 +49,12 @@ export function addLobeAttributes(THREE, geo, lobes) {
 // ---------------------------------------------------------------- painel
 const PANEL_VS = `
 attribute vec3 aCol; attribute float aLobe;
-varying vec3 vN; varying vec3 vV; varying vec3 vCol; varying float vLobe;
-void main(){ vCol = aCol; vLobe = aLobe; vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = -mv.xyz; gl_Position = projectionMatrix * mv; }`;
-const PANEL_FS = `
+varying vec3 vN; varying vec3 vV; varying vec3 vCol; varying float vLobe; varying vec3 vLocal;
+void main(){ vCol = aCol; vLobe = aLobe; vLocal = position; vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position, 1.0); vV = -mv.xyz; gl_Position = projectionMatrix * mv; }`;
+const PANEL_FS = () => `
 uniform float uHi, uTime;
-varying vec3 vN; varying vec3 vV; varying vec3 vCol; varying float vLobe;
+varying vec3 vN; varying vec3 vV; varying vec3 vCol; varying float vLobe; varying vec3 vLocal;
+${SPOT_GLSL}
 void main(){
   vec3 n = normalize(vN); vec3 v = normalize(vV);
   if (!gl_FrontFacing) n = -n;
@@ -63,7 +64,9 @@ void main(){
   float spec = pow(max(dot(reflect(-L, n), v), 0.0), 22.0);
   float k = 1.0;
   if (uHi > -0.5) k = abs(vLobe - uHi) < 0.5 ? 1.2 + 0.18 * sin(uTime * 4.0) : 0.3;
+  if (uAction > 0.5) k *= 0.38;
   vec3 c = vCol * (0.22 + 0.85 * dif) * k + vCol * rim * 1.2 * k + vec3(spec * 0.4 * k);
+  if (uAction > 0.5) c += vec3(1.0, 0.9, 0.55) * spotGlow(vLocal) * (1.2 + 0.6 * dif) * (0.85 + 0.15 * sin(uTime * 6.0));
   gl_FragColor = vec4(min(c, vec3(1.0)), 1.0);
 }`;
 // pontos das legendas: vários candidatos por lobo; escolhe-se o mais virado para a câmara
@@ -84,7 +87,7 @@ const VIEWS = {
   frente: { yaw: 0, pitch: 0.1, sub: 'Vista de frente' },
 };
 
-export function createBrainPanel(THREE, { geo, lobes, overview, host, sci, speak, onSelect, onClose }) {
+export function createBrainPanel(THREE, { geo, lobes, overview, host, sci, speak, onSelect, onClose, onAction }) {
   const el = document.createElement('div');
   el.id = 'brainPanel'; el.hidden = true;
   el.innerHTML = `
@@ -93,7 +96,8 @@ export function createBrainPanel(THREE, { geo, lobes, overview, host, sci, speak
     <div class="bp-view"><canvas></canvas><svg class="bp-lines"></svg><div class="bp-labels"></div><div class="bp-drag">arrasta para rodar · toca num lobo</div></div>
     <div class="bp-tools">
       <button data-v="dir">Direito</button><button data-v="esq">Esquerdo</button><button data-v="cima">Cima</button><button data-v="tras">Trás</button>
-      <button data-v="rodar">↻ Rodar</button><button class="bp-info" aria-pressed="true">ℹ️ Funções</button></div>
+      <button data-v="rodar">↻ Rodar</button><button class="bp-act-btn" aria-pressed="false">⚡ Em acção</button><button class="bp-info" aria-pressed="true">ℹ️ Funções</button></div>
+    <div class="bp-act" hidden><div class="bp-act-now"></div><small class="bp-act-tip"></small></div>
     <div class="bp-list"><h4>ⓘ Principais estruturas e funções</h4><div class="bp-rows"></div></div>`;
   host.appendChild(el);
   const view = el.querySelector('.bp-view'), canvas = el.querySelector('canvas'), svg = el.querySelector('.bp-lines'), labBox = el.querySelector('.bp-labels');
@@ -104,7 +108,8 @@ export function createBrainPanel(THREE, { geo, lobes, overview, host, sci, speak
   renderer.setClearColor(0x000000, 0);
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(26, 1, 1, 300);
-  const mat = new THREE.ShaderMaterial({ vertexShader: PANEL_VS, fragmentShader: PANEL_FS, side: THREE.DoubleSide, uniforms: { uHi: { value: -1 }, uTime: { value: 0 } } });
+  const mat = new THREE.ShaderMaterial({ vertexShader: PANEL_VS, fragmentShader: PANEL_FS(), side: THREE.DoubleSide,
+    uniforms: { uHi: { value: -1 }, uTime: { value: 0 }, uAction: { value: 0 }, uSpot: { value: SPOTS.map(s => new THREE.Vector4(...s.p)) }, uSpotA: { value: new Float32Array(SPOTS.length) } } });
   const mesh = new THREE.Mesh(geo, mat); scene.add(mesh);
   const tgt = new THREE.Vector3(...TARGET);
 
@@ -131,6 +136,8 @@ export function createBrainPanel(THREE, { geo, lobes, overview, host, sci, speak
   $$('.bp-tools [data-v]').forEach(b => b.onclick = () => setView(b.dataset.v));
   el.querySelector('.bp-info').onclick = e => { const on = listEl.hidden; listEl.hidden = !on; e.currentTarget.setAttribute('aria-pressed', on); };
   el.querySelector('.bp-close').onclick = () => { api.close(); onClose?.(); };
+  const actBtn = el.querySelector('.bp-act-btn'), actBox = el.querySelector('.bp-act');
+  actBtn.onclick = () => onAction?.(actBtn.getAttribute('aria-pressed') !== 'true');
 
   // arrastar / tocar
   let drag = null;
@@ -140,7 +147,7 @@ export function createBrainPanel(THREE, { geo, lobes, overview, host, sci, speak
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (Math.hypot(dx, dy) > 5) drag.moved = true;
     if (!drag.moved) return;
-    cam.auto = false; $$('.bp-tools [data-v]').forEach(b => b.classList.remove('on'));
+    cam.auto = false; cam.lastDrag = performance.now(); cam.view = 'livre'; $$('.bp-tools [data-v]').forEach(b => b.classList.remove('on'));
     cam.yaw = cam.ty = drag.yaw - dx * 0.012; cam.pitch = cam.tp = Math.max(-1.2, Math.min(1.45, drag.pitch + dy * 0.01));
     el.querySelector('.bp-sub').textContent = 'Vista livre';
   });
@@ -220,6 +227,21 @@ export function createBrainPanel(THREE, { geo, lobes, overview, host, sci, speak
     open(v) { el.hidden = false; api.isOpen = true; fillRows(); resize(); if (v) setView(v); else if (!el.querySelector('.bp-sub').textContent) setView('dir'); },
     close() { el.hidden = true; api.isOpen = false; api.selected = -1; mat.uniforms.uHi.value = -1; markRows(); },
     toggle() { api.isOpen ? api.close() : api.open(); },
+    // cérebro em acção: zonas a brilhar e legendas do que está a trabalhar
+    setAction(on, tip) {
+      actBtn.setAttribute('aria-pressed', on ? 'true' : 'false'); actBox.hidden = !on; mat.uniforms.uAction.value = on ? 1 : 0;
+      el.querySelector('.bp-act-tip').textContent = tip || '';
+      if (!on) mat.uniforms.uSpotA.value.fill(0);
+    },
+    setSpots(a, activeKeys, actions) {
+      mat.uniforms.uSpotA.value.set(a);
+      // virar a vista para o hemisfério que está a trabalhar (a mão direita acende o lado esquerdo!)
+      let side = 0; SPOTS.forEach((sp, i) => { if (Math.abs(sp.p[0]) > 2) side += a[i] * Math.sign(sp.p[0]); });
+      const now = performance.now(), want = side > 0.5 ? 'esq' : side < -0.5 ? 'dir' : null;
+      if (want && want !== cam.view && !cam.auto && now - (cam.lastDrag || 0) > 6000 && now - (cam.lastAuto || 0) > 2500) { cam.lastAuto = now; setView(want); }
+      const html = (activeKeys.length ? activeKeys.slice(0, 3) : []).map(k => `<div>${actions[k].txt}</div>`).join('') || '<div class="idle">Mexe uma mão, faz caretas, fala ou fecha os olhos…</div>';
+      const box = el.querySelector('.bp-act-now'); if (box.innerHTML !== html) box.innerHTML = html;
+    },
     refreshText: fillRows,
     select(i, say) {
       api.selected = i; mat.uniforms.uHi.value = i; markRows();
@@ -286,4 +308,62 @@ function wrap(g, txt, x, y, w, lh, maxY) {
     if (g.measureText(t).width > w && line) { if (y + lh > maxY) return; g.fillText(line, x, y); y += lh; line = word; } else line = t;
   }
   if (line && y + lh <= maxY + lh) g.fillText(line, x, y);
+}
+
+// ---------------------------------------------------------------- cérebro em acção
+// Zonas que acendem (referencial da cabeça, cm; x > 0 = hemisfério ESQUERDO da pessoa). [x, y, z, raio]
+export const SPOTS = [
+  { id: 'motorMaoE', p: [4.8, 7.0, 0.1, 1.7] },   // córtex motor, mão — hemisfério esquerdo (mexe a mão direita)
+  { id: 'motorMaoD', p: [-4.8, 7.0, 0.1, 1.7] },
+  { id: 'motorCaraE', p: [5.8, 4.6, 0.8, 1.5] },
+  { id: 'motorCaraD', p: [-5.8, 4.6, 0.8, 1.5] },
+  { id: 'sensCaraE', p: [5.8, 4.6, -0.9, 1.5] },  // córtex somatossensitivo (giro pós-central), cara
+  { id: 'sensCaraD', p: [-5.8, 4.6, -0.9, 1.5] },
+  { id: 'broca', p: [4.8, 3.6, 3.2, 1.5] },       // área de Broca (só no hemisfério esquerdo)
+  { id: 'wernicke', p: [5.7, 3.2, -3.0, 1.5] },
+  { id: 'auditivoE', p: [5.6, 2.4, -0.6, 1.4] },
+  { id: 'auditivoD', p: [-5.6, 2.4, -0.6, 1.4] },
+  { id: 'visual', p: [0, 4.0, -9.0, 2.4] },       // córtex visual primário, nos dois polos occipitais
+  { id: 'cerebelo', p: [0, -0.5, -7.2, 3.0] },
+  { id: 'tronco', p: [0, -1.0, -3.9, 1.4] },
+  { id: 'motorPernas', p: [0, 8.9, -0.6, 2.0] },
+];
+export const N_SPOTS = SPOTS.length;
+export const SPOT_GLSL = `
+uniform vec4 uSpot[${SPOTS.length}]; uniform float uSpotA[${SPOTS.length}]; uniform float uAction;
+float spotGlow(vec3 p){ float g = 0.0; for (int i = 0; i < ${SPOTS.length}; i++) { vec3 d = p - uSpot[i].xyz; g += uSpotA[i] * exp(-dot(d, d) / (uSpot[i].w * uSpot[i].w)); } return min(g, 1.6); }`;
+// o que cada actividade acende, a legenda e o que a voz diz da primeira vez
+export const ACTIONS = {
+  maoD: { spots: ['motorMaoE'], txt: '✋ Mão direita → córtex motor do lado ESQUERDO', voz: 'Mexeste a mão direita. Quem a manda mexer é o lado esquerdo do cérebro!' },
+  maoE: { spots: ['motorMaoD'], txt: '✋ Mão esquerda → córtex motor do lado DIREITO', voz: 'Mexeste a mão esquerda. Quem a manda mexer é o lado direito do cérebro!' },
+  cara: { spots: ['motorCaraE', 'motorCaraD'], txt: '😜 Caretas → córtex motor da cara', voz: 'Para fazer caretas trabalha a parte do cérebro que mexe a cara.' },
+  fala: { spots: ['broca', 'motorCaraE', 'motorCaraD'], txt: '🗣️ A falar → área de Broca (frontal esquerdo)', voz: 'Estás a falar! Acendeu a área de Broca, no lobo frontal esquerdo.' },
+  ouvir: { spots: ['auditivoE', 'auditivoD', 'wernicke'], txt: '👂 A ouvir → córtex auditivo e área de Wernicke', voz: 'Quando ouves, trabalha o lobo temporal, por cima das orelhas.' },
+  ver: { spots: ['visual'], txt: '👀 A ver → córtex visual (lobo occipital)', voz: null },
+  olhosFechados: { spots: [], txt: '😌 Olhos fechados → o córtex visual descansa', voz: 'Fechaste os olhos e o lobo occipital, que trata da visão, descansou.' },
+  equilibrio: { spots: ['cerebelo', 'motorPernas'], txt: '🦩 Num pé só → o cerebelo a equilibrar-te', voz: 'Num pé só! O cerebelo está a trabalhar para não caíres.' },
+  toqueE: { spots: ['sensCaraD'], txt: '🤚 Toque na cara (lado esquerdo) → lobo parietal DIREITO', voz: 'Sentiste o toque com o lobo parietal do outro lado.' },
+  toqueD: { spots: ['sensCaraE'], txt: '🤚 Toque na cara (lado direito) → lobo parietal ESQUERDO', voz: 'Sentiste o toque com o lobo parietal do outro lado.' },
+  tronco: { spots: ['tronco'], txt: '🫁 Respirar e o coração → tronco encefálico (sempre)', voz: null },
+};
+// recebe as medições de cada imagem e devolve a intensidade de cada zona (0..1) e as acções activas
+export class BrainActivity {
+  constructor() { this.lvl = Object.fromEntries(Object.keys(ACTIONS).map(k => [k, 0])); this.spotA = new Float32Array(SPOTS.length); this.said = {}; this.t = 0; }
+  update(inp, dt, onFirst) {
+    this.t += dt;
+    const tgt = {
+      maoD: inp.handR || 0, maoE: inp.handL || 0, cara: inp.face || 0, fala: inp.speak || 0, ouvir: inp.hear || 0,
+      ver: inp.facePresent && !inp.eyesClosed ? 0.55 : 0, olhosFechados: inp.eyesClosed ? 1 : 0, equilibrio: inp.balance || 0,
+      toqueE: inp.touchL || 0, toqueD: inp.touchR || 0, tronco: 0.3 + 0.2 * Math.sin(this.t * 2.2),
+    };
+    for (const k in tgt) {
+      const a = tgt[k] > this.lvl[k] ? 8 : 1.6;    // acende depressa, apaga devagar
+      this.lvl[k] += (tgt[k] - this.lvl[k]) * Math.min(1, dt * a);
+      if (this.lvl[k] > 0.6 && !this.said[k] && ACTIONS[k].voz) { this.said[k] = true; onFirst?.(k, ACTIONS[k]); }
+    }
+    this.spotA.fill(0);
+    for (const [k, A] of Object.entries(ACTIONS)) for (const s of A.spots) { const i = SPOTS.findIndex(x => x.id === s); this.spotA[i] = Math.max(this.spotA[i], this.lvl[k]); }
+    return this.spotA;
+  }
+  active() { return Object.entries(this.lvl).filter(([k, v]) => v > 0.35 && k !== 'tronco').sort((a, b) => b[1] - a[1]).map(([k]) => k); }
 }

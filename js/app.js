@@ -3,8 +3,11 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js';
 import { FilesetResolver, FaceLandmarker, HandLandmarker, PoseLandmarker, ObjectDetector } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/vision_bundle.mjs';
 import { CANON, MIRROR } from './canon.js';
-import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS, BRAIN_LOBES, BRAIN_OVERVIEW, LOBE_PARTS } from './parts.js';
-import { addLobeAttributes, createBrainPanel } from './cerebro.js';
+import { LAYERS, PRESETS, PARTS, HAND_PARTS, MUSCLES, CHALLENGES, TXT, BODY_PARTS, BODY_CHALLENGES, QUIZ, OBJECTS, objPlural, ETAPAS, LADDER, LADO, COMBOS, SEQ_ITEMS, LANDMARKS, CLINICAL, GAZE, QUIZ_MAIS, BRAIN_LOBES, BRAIN_OVERVIEW, LOBE_PARTS, TESTES } from './parts.js';
+const APP_VERSION = 'v4.3';
+import { addLobeAttributes, createBrainPanel, SPOTS, SPOT_GLSL, ACTIONS, BrainActivity } from './cerebro.js';
+import { createProfiles } from './perfis.js';
+import { createCheck } from './verificacao.js';
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -49,7 +52,7 @@ async function loadModel(url, sha) {
 const DEFAULTS = {
   layers: { skull: true, teeth: true, spine: true, brain: false, eyes: true, muscles: false, hands: true, body: false },
   babyTeeth: false, level: 'exploradores',
-  objXray: true, objEN: false, objMov: false, prog: { max: 1, best: {} }, unlockAll: false, lobes: true, brainPanel: false,
+  objXray: true, objEN: false, objMov: false, prog: { max: 1, best: {} }, unlockAll: false, lobes: true, brainPanel: false, brainAction: false,
   labels: true, look: 'xray', bright: 1, realMe: 0.45, anat: 1,
   reveal: 'all', lens: 0.26, feather: 0.25,
   fit: { size: 1, w: 1, h: 1, d: 1, x: 0, y: 0, z: 0 },
@@ -60,6 +63,8 @@ const FIT_PRESETS = {
   crianca: { size: 1.06, w: 1.02, h: 1.05, d: 1, x: 0, y: 0.5, z: 0 },
 };
 let S = loadSettings();
+let check = null;
+let profiles = null;   // perfis da família (criados no arranque, ver initUI)
 function loadSettings() {
   let s = structuredClone(DEFAULTS);
   try {
@@ -71,7 +76,7 @@ function loadSettings() {
 let saveTimer = 0;
 function saveSettings() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { try { localStorage.setItem('espelhoRaioX', JSON.stringify(S)); } catch (e) { } }, 300);
+  saveTimer = setTimeout(() => { try { localStorage.setItem('espelhoRaioX', JSON.stringify(S)); } catch (e) { } profiles?.sync(); }, 300);
 }
 const getPath = (o, p) => p.split('.').reduce((a, k) => a?.[k], o);
 const setPath = (o, p, v) => { const ks = p.split('.'); const last = ks.pop(); ks.reduce((a, k) => a[k], o)[last] = v; };
@@ -128,18 +133,19 @@ const hex3 = h => { const c = parseInt(h.slice(1), 16); return new THREE.Vector3
 const XRAY_VS = `
 varying vec3 vN; varying vec3 vW;
 #ifdef LOBES
-attribute vec3 aCol; attribute float aLobe; varying vec3 vCol; varying float vLobe;
+attribute vec3 aCol; attribute float aLobe; varying vec3 vCol; varying float vLobe; varying vec3 vLocal;
 #endif
 void main(){
 #ifdef LOBES
-  vCol = aCol; vLobe = aLobe;
+  vCol = aCol; vLobe = aLobe; vLocal = position;
 #endif
   vN = normalize(normalMatrix * normal); vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`;
 const XRAY_FS = `
 uniform vec3 uColor; uniform float uPow, uFill, uGain, uOpacity, uTime, uNeon, uHue;
 varying vec3 vN; varying vec3 vW;
 #ifdef LOBES
-uniform float uLobes, uHi; varying vec3 vCol; varying float vLobe;
+uniform float uLobes, uHi; varying vec3 vCol; varying float vLobe; varying vec3 vLocal;
+${SPOT_GLSL}
 #endif
 vec3 hsv(float h, float s, float v){ vec3 k = clamp(abs(mod(h*6.0+vec3(0.,4.,2.),6.)-3.)-1.,0.,1.); return v*mix(vec3(1.),k,s); }
 void main(){
@@ -148,9 +154,13 @@ void main(){
   vec3 col = uColor; float k = 1.0, fill = uFill; bool lob = false;
 #ifdef LOBES
   if (uLobes > 0.5) { col = vCol; lob = true; fill *= 1.8; if (uHi > -0.5) k = abs(vLobe - uHi) < 0.5 ? 1.9 + 0.3 * sin(uTime * 5.0) : 0.25; }
+  if (uAction > 0.5) k *= 0.45;
 #endif
   if (uNeon > 0.5 && !lob) col = hsv(fract(uHue + vW.y*0.0016 + uTime*0.12), 0.75, 1.0);
   vec3 c = col * (rim * 1.25 + fill) * uGain * uOpacity * k;
+#ifdef LOBES
+  if (uAction > 0.5) c += vec3(1.0, 0.9, 0.55) * spotGlow(vLocal) * (0.9 + 1.2 * rim) * (0.85 + 0.15 * sin(uTime * 6.0)) * uGain * uOpacity;
+#endif
   c = min(c, vec3(1.0));
   gl_FragColor = vec4(c, max(c.r, max(c.g, c.b)));
 }`;
@@ -176,7 +186,8 @@ for (const [k, [cx, cs, pw, fill, hue]] of Object.entries(KINDS)) {
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
       blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
       uniforms: { uColor: { value: hex3(cx) }, uPow: { value: pw }, uFill: { value: fill }, uGain: { value: 1 }, uOpacity: { value: 1 },
-        uTime: { value: 0 }, uNeon: { value: look === 'neon' ? 1 : 0 }, uHue: { value: hue }, uLobes: { value: 0 }, uHi: { value: -1 } },
+        uTime: { value: 0 }, uNeon: { value: look === 'neon' ? 1 : 0 }, uHue: { value: hue }, uLobes: { value: 0 }, uHi: { value: -1 },
+        uAction: { value: 0 }, uSpot: { value: SPOTS.map(sp => new THREE.Vector4(...sp.p)) }, uSpotA: { value: new Float32Array(SPOTS.length) } },
     });
     if (k === 'brain') m.defines = { LOBES: '' };
     MATS[look][k] = m;
@@ -424,10 +435,11 @@ function makeBodyRig() {
 let faceLM = null, handLM = null;
 let fileset = null;
 const forceCPU = /[?&]cpu\b/.test(location.search);
+let usedGPU = !forceCPU;
 async function mkTask(Cls, opts) {
   if (forceCPU) return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } });
   try { return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'GPU' } }); }
-  catch (e) { console.warn('GPU indisponível, a usar CPU', e); return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } }); }
+  catch (e) { console.warn('GPU indisponível, a usar CPU', e); usedGPU = false; return await Cls.createFromOptions(fileset, { ...opts, baseOptions: { ...opts.baseOptions, delegate: 'CPU' } }); }
 }
 // o modelo do corpo só é carregado quando é preciso
 let poseLM = null, poseLoading = null;
@@ -589,7 +601,7 @@ function detect(now) {
   const t0 = performance.now();
   const t = now / 1000;
   const fr = faceLM.detectForVideo(source, ts);
-  const doHands = S.layers.hands || mode !== 'explorar' || S.reveal === 'lens';
+  const doHands = S.layers.hands || mode !== 'explorar' || S.reveal === 'lens' || (S.brainAction && brainPanel?.isOpen) || check?.running;
   let hr = null;
   if (doHands && !(handSkip && frameN % 2)) hr = handLM.detectForVideo(source, ts);
   detMs = lerp(detMs, performance.now() - t0, 0.1);
@@ -1256,9 +1268,11 @@ function setMode(m) {
       promptShow('🎥', 'O Desafio precisa de movimento: usa a câmara ou um vídeo.', '', null);
       return;
     }
-    chooseLevel();
+    if (profiles.count > 1 && !askedWho) { askedWho = true; profiles.open(() => { if (mode === 'desafio' && (!ch || !ch.list)) chooseLevel(); }); }
+    else chooseLevel();
   }
 }
+let askedWho = false;
 function promptShow(emoji, text, stars, btn, onBtn, cls = '', opts = null) {
   const p = $('#prompt');
   const po = p.querySelector('.p-opts');
@@ -1281,16 +1295,18 @@ const levelUnlocked = n => !!S.unlockAll || n <= prog().max;
 function chooseLevel() {
   if (sourceKind === 'image') { promptShow('🎥', 'O Desafio precisa de movimento: usa a câmara ou um vídeo.', '', null); return; }
   const opts = LADDER.map((L, i) => {
-    const n = i + 1, ok = levelUnlocked(n), b = prog().best[n], e = ETAPAS[L.etapa];
+    const n = i + 1, ok = levelUnlocked(n), b = prog().best[n], e = ETAPAS[L.etapa], sug = n === profiles.suggested() && b == null;
     return {
-      html: `<b>${ok ? n : '🔒'}</b><span>${e.emoji} ${L.titulo}</span><small>${b != null ? '⭐ ' + b + '/' + L.rondas : ok ? e.idade : 'trancado'}</small>`,
-      cls: ok ? '' : 'locked',
+      html: `<b>${ok ? n : '🔒'}</b><span>${e.emoji} ${L.titulo}</span><small>${b != null ? '⭐ ' + b + '/' + L.rondas : sug ? '👉 começa aqui' : ok ? e.idade : 'trancado'}</small>`,
+      cls: (ok ? '' : 'locked') + (sug ? ' sug' : ''),
       on: () => ok ? startLevel(n) : (toast('🔒 Ganha pelo menos 60% das estrelas no nível anterior para abrir este.', 3200), speak('Este nível ainda está trancado.')),
     };
   });
   const extra = sourceKind === 'video' ? ' Num vídeo gravado só passa se lá estiverem as caretas certas!' : '';
-  promptShow('⭐', `Desafio! Escolhe o nível.${extra}`, '', null, null, 'levels', opts);
-  speak('Desafio! Escolhe o nível.');
+  const pf = profiles.current;
+  opts.push({ html: `<b>${pf.emoji}</b><span>${pf.nome.replace(/[<>&]/g, '')}</span><small>👤 trocar de jogador</small>`, cls: 'who', on: () => profiles.open(() => { if (mode === 'desafio' && (!ch || !ch.list || ch.phase === 'end')) chooseLevel(); }) });
+  promptShow('⭐', `Desafio de ${pf.nome}! Escolhe o nível.${extra}`, '', null, null, 'levels', opts);
+  speak(`Desafio de ${pf.nome}! Escolhe o nível.`);
 }
 function startLevel(n) {
   const L = LADDER[n - 1];
@@ -1449,6 +1465,7 @@ quizEl.addEventListener('click', e => { const b = e.target.closest('button'); if
 function answerQuiz(i) {
   if (!ch || ch.phase !== 'ask') return;
   const c = ch.list[ch.i]; if (c?.tipo !== 'quiz') return;
+  profiles?.recordQuiz(c.q.p, i === c.q.c);
   const btns = [...quizEl.querySelectorAll('button')];
   btns.forEach((b, k) => { b.classList.toggle('right', k === c.q.c); b.classList.toggle('wrong', k === i && i !== c.q.c); });
   const r = btns[i]?.getBoundingClientRect(), sr = stage.getBoundingClientRect();
@@ -1481,7 +1498,7 @@ function nearestTarget(tips, targets, radius) {
   }
   return best;
 }
-let noHandSince = 0, bodyMiss = 0, bodyToastT = 0;
+let noHandSince = 0, bodyMiss = 0, bodyToastT = 0, playT = 0;
 function updateInteraction(f0, dt, now) {
   const tips = fingerTips();
   if (!tips.length) { if (!noHandSince) noHandSince = now; } else noHandSince = 0;
@@ -1993,6 +2010,7 @@ function frame(nowMs) {
   const now = nowMs, t = now / 1000, dt = clamp(t - tPrev, 0.001, 0.25); tPrev = t;
   fpsN++; if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
   try { detect(now); } catch (e) { console.error(e); }
+  playT += dt; if (playT > 30) { profiles?.addTime(Math.round(playT)); playT = 0; saveSettings(); }
 
   // materiais
   for (const look of ['xray', 'neon']) for (const m of Object.values(MATS[look])) { m.uniforms.uTime.value = t; m.uniforms.uGain.value = S.bright; m.uniforms.uOpacity.value = S.anat; }
@@ -2025,6 +2043,8 @@ function frame(nowMs) {
     else if (now - bodyMiss > 4000 && now - bodyToastT > 25000 && mode !== 'objectos') { bodyToastT = now; toast(TXT.semCorpo, 4500); }
   } else bodyMiss = 0;
   const f0 = primaryFace();
+  updateBrainAction(dt, f0);
+  if (check?.running) { if (!(S.brainAction && brainPanel?.isOpen)) measureActivity(dt, f0); check.update(dt); }
 
   // músculos
   mctx.clearRect(0, 0, vw, vh);
@@ -2165,22 +2185,126 @@ function refreshUI() {
   });
   $$('#layerChips .chip').forEach(b => { b.classList.toggle('on', !!S.layers[b.dataset.layer]); b.setAttribute('aria-pressed', !!S.layers[b.dataset.layer]); });
   $('#btnVoz').setAttribute('aria-pressed', S.voice); $('#btnVoz').textContent = S.voice ? '🔊' : '🔇';
+  if (profiles) { const p = profiles.current; $('#btnPerfil .pe').textContent = p.emoji; $('#btnPerfil .pn').textContent = p.nome; }
   $('#app').classList.toggle('nopanel', !S.panel); $('#btnPainel').setAttribute('aria-pressed', S.panel);
   updateSolidOpacity();
   saveSettings();
   requestAnimationFrame(layout);
 }
+const brainAct = new BrainActivity();
+let mic = null;
+async function startMic() {
+  if (mic) return true;
+  try {
+    const st = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    const ac = new (window.AudioContext || window.webkitAudioContext)(); const src = ac.createMediaStreamSource(st);
+    const an = ac.createAnalyser(); an.fftSize = 1024; src.connect(an);
+    mic = { st, ac, an, buf: new Float32Array(an.fftSize), lvl: 0 };
+    return true;
+  } catch (e) { console.warn('microfone indisponível', e); return false; }
+}
+function stopMic() { if (!mic) return; mic.st.getTracks().forEach(t => t.stop()); mic.ac.close?.(); mic = null; }
+async function setBrainAction(on) {
+  S.brainAction = on;
+  if (!on) { stopMic(); brainPanel?.setAction(false); for (const look of ['xray', 'neon']) MATS[look].brain.uniforms.uAction.value = 0; return; }
+  S.layers.brain = true; refreshUI();
+  brainPanel?.setAction(true, 'A ligar o microfone… (o som fica só neste computador)');
+  const okMic = await startMic();
+  if (!S.brainAction) { stopMic(); return; }
+  brainPanel?.setAction(true, okMic ? '🎤 Microfone ligado: fala ou canta para ver a área da fala. O som nunca sai deste computador.' : 'Sem microfone: a área da fala só acende com o microfone ligado.');
+  speak('Cérebro em acção! Mexe uma mão, faz caretas, fala, ou fecha os olhos.');
+}
+// de que lado da pessoa está a mão (1 = esquerda, -1 = direita)
+function handSide(h, f0) {
+  const wx = h.lm[0], wy = h.lm[1];
+  if (f0) { const p = f0.pose; return ((wx - p.C.x) * p.X.x + (-wy - p.C.y) * p.X.y) >= 0 ? 1 : -1; }
+  const b = bodies.find(b => b.rig?.on);
+  if (b) { const r = b.rig; return ((wx - r.C.x) * r.X.x + (-wy - r.C.y) * r.X.y) >= 0 ? 1 : -1; }
+  return wx > vw / 2 ? 1 : -1;   // vídeo não espelhado: a esquerda da pessoa fica à direita da imagem
+}
+const FACE_KEYS = ['mouthSmileLeft', 'mouthSmileRight', 'jawOpen', 'mouthPucker', 'browInnerUp', 'browDownLeft', 'browDownRight', 'mouthFrownLeft', 'mouthFrownRight', 'mouthFunnel', 'cheekPuff'];
+const actFace = { prev: null, rate: 0, jawSpd: 0, closedT: 0 };
+function measureActivity(dt, f0) {
+  const inp = { facePresent: !!f0 };
+  // mãos: velocidade das pontas dos dedos, em tamanhos de mão por segundo
+  for (const h of hands) {
+    if (!h.active || !h.lm) { h.prevTips = null; h.actv = 0; continue; }
+    const tips = [0, 4, 8, 12, 16, 20]; let m = 0;
+    if (h.prevTips) tips.forEach((i, k) => { m += Math.hypot(h.lm[i * 3] - h.prevTips[k * 2], h.lm[i * 3 + 1] - h.prevTips[k * 2 + 1]); });
+    h.prevTips = tips.flatMap(i => [h.lm[i * 3], h.lm[i * 3 + 1]]);
+    const sp = m / tips.length / dt / Math.max(15, h.hs);
+    h.actv = lerp(h.actv || 0, clamp((sp - 0.35) / 1.8, 0, 1), clamp(dt * 8, 0, 1));
+    if (handSide(h, f0) > 0) inp.handL = Math.max(inp.handL || 0, h.actv); else inp.handR = Math.max(inp.handR || 0, h.actv);
+  }
+  if (f0) {
+    const b = f0.bs;
+    if (actFace.prev) { let d = 0; for (const k of FACE_KEYS) d += Math.abs((b[k] || 0) - (actFace.prev[k] || 0)); actFace.rate = lerp(actFace.rate, d / dt, clamp(dt * 6, 0, 1)); actFace.jawSpd = lerp(actFace.jawSpd, Math.abs((b.jawOpen || 0) - (actFace.prev.jawOpen || 0)) / dt, clamp(dt * 5, 0, 1)); }
+    actFace.prev = Object.fromEntries(FACE_KEYS.map(k => [k, b[k] || 0]));
+    inp.face = clamp((actFace.rate - 0.6) / 2.5, 0, 1);
+    const closed = ((b.eyeBlinkLeft || 0) + (b.eyeBlinkRight || 0)) / 2 > 0.6;
+    actFace.closedT = closed ? actFace.closedT + dt : 0;
+    inp.eyesClosed = actFace.closedT > 0.4;
+    // tocar na cara: ponta do dedo dentro do contorno da cara; o lado conta no referencial da cabeça
+    const p = f0.pose;
+    for (const tip of fingerTips()) {
+      const dx = tip[0] - p.C.x, dy = -tip[1] - p.C.y;
+      const lx = (dx * p.X.x + dy * p.X.y) / f0.faceW, ly = (dx * p.Y.x + dy * p.Y.y) / f0.faceW;
+      if (Math.abs(lx) < 0.5 && ly < 0.55 && ly > -0.8) { if (lx > 0) inp.touchL = 1; else inp.touchR = 1; }
+    }
+  } else { actFace.prev = null; actFace.closedT = 0; }
+  // microfone: falar (som + boca a mexer) ou ouvir (som com a boca parada); a voz da app também conta como ouvir
+  let snd = 0;
+  if (mic) { mic.an.getFloatTimeDomainData(mic.buf); let e = 0; for (const v of mic.buf) e += v * v; const rms = Math.sqrt(e / mic.buf.length); mic.lvl = lerp(mic.lvl, rms, 0.4); snd = clamp((mic.lvl - 0.015) / 0.05, 0, 1); }
+  const mouth = f0 && actFace.jawSpd > 0.35;
+  inp.speak = snd > 0.3 && mouth ? 1 : 0;
+  inp.hear = Math.max(window.speechSynthesis?.speaking ? 1 : 0, snd > 0.3 && !mouth ? snd : 0);
+  // equilíbrio num pé
+  for (const bd of bodies) if (bd.rig?.on && bd.vis[27] > VIS && bd.vis[28] > VIS) {
+    const leg = Math.hypot(bd.lm[23 * 3] - bd.lm[27 * 3], bd.lm[23 * 3 + 1] - bd.lm[27 * 3 + 1]);
+    if (Math.abs(bd.lm[27 * 3 + 1] - bd.lm[28 * 3 + 1]) > leg * 0.16) inp.balance = 1;
+  }
+  return inp;
+}
+function updateBrainAction(dt, f0) {
+  const on = S.brainAction && brainPanel?.isOpen;
+  for (const look of ['xray', 'neon']) MATS[look].brain.uniforms.uAction.value = on ? 1 : 0;
+  if (!on) return;
+  const a = brainAct.update(measureActivity(dt, f0), dt, (k, A) => { if (S.voice && !window.speechSynthesis?.speaking) speak(A.voz); });
+  for (const look of ['xray', 'neon']) MATS[look].brain.uniforms.uSpotA.value.set(a);
+  brainPanel.setSpots(a, brainAct.active(), ACTIONS);
+}
 function openBrainPanel(view) {
   if (!brainPanel) return;
   S.layers.brain = true; S.brainPanel = true; brainPanel.open(view); $('#card .c-more').hidden = true; refreshUI();
 }
-function closeBrainPanel() { if (brainPanel?.isOpen) { brainPanel.close(); S.brainPanel = false; saveSettings(); } }
+function closeBrainPanel() { if (S.brainAction) setBrainAction(false); if (brainPanel?.isOpen) { brainPanel.close(); S.brainPanel = false; saveSettings(); } }
 function toggleBrainPanel() { brainPanel?.isOpen ? closeBrainPanel() : openBrainPanel(); }
 function bodyNudge() {
   if (!S.layers.body) return;
   setTimeout(() => { if (S.layers.body && running && !bodyRig?.on) toast(TXT.semCorpo, 3500); }, 5000);
 }
+function onProfileChange(p, kind) {
+  refreshUI(); brainPanel?.refreshText();
+  if (kind === 'switch') {
+    toast(`${p.emoji} A jogar: ${p.nome}`, 2200);
+    if (mode === 'desafio' && (!ch || !ch.list || ch.phase === 'end')) chooseLevel();
+  }
+}
 function initUI() {
+  profiles = createProfiles({ S, save: saveSettings, fitPresets: FIT_PRESETS, host: document.body, speak, onChange: onProfileChange });
+  check = createCheck({
+    host: stage, T: TESTES, version: APP_VERSION, getFace: primaryFace, hands: () => hands, bodies: () => bodies,
+    body: () => (body.active && body.rig?.on ? body : null), gazeNow, gazeOk, fingerTips, handSide,
+    fps: () => fps, size: () => [vw, vh], gpu: () => (usedGPU ? 'com placa gráfica (GPU)' : 'só processador (CPU)'),
+    device: () => { const u = navigator.userAgent; const os = /Windows/.test(u) ? 'Windows' : /Android/.test(u) ? 'Android' : /iPhone|iPad/.test(u) ? 'iOS' : /Mac/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'outro'; const br = (u.match(/(Edg|Chrome|Firefox|Safari)\/(\d+)/) || []).slice(1).join(' '); return `${os} · ${br.replace('Edg', 'Edge')}`; },
+    profile: () => profiles.current, speak, toast, saveBlob, ok: sndOk,
+    onStart: () => { setMode('explorar'); closeBrainPanel(); S.layers = { ...PRESETS.ossos }; refreshUI(); },
+    onStep: id => { if (id === 'corpo') { S.layers.body = true; refreshUI(); } },
+  });
+  $('#btnCheck').onclick = () => { if (!running) { toast('Liga primeiro a câmara 🎥'); return; } if (window.innerWidth < 900) { S.panel = false; refreshUI(); } check.start(); };
+  S.brainAction = false;   // o microfone só se liga com um clique
+  $('#btnPerfil').onclick = () => profiles.open();
+  $('#btnPerfis').onclick = () => profiles.open();
   if (window.innerWidth < 900) S.panel = false;
   const chips = $('#layerChips');
   chips.innerHTML = Object.entries(LAYERS).map(([k, l]) => `<button class="chip" data-layer="${k}" style="--c:${l.cor}"><i></i>${l.nome}</button>`).join('');
@@ -2224,7 +2348,7 @@ function initUI() {
   stage.addEventListener('pointermove', e => { pointer = toVid(e); });
   stage.addEventListener('pointerleave', () => { pointer = null; });
   stage.addEventListener('click', e => {
-    if (e.target.closest('#card, #prompt, #quiz, #objSummary, #brainPanel')) return;
+    if (e.target.closest('#card, #prompt, #quiz, #objSummary, #brainPanel, #check')) return;
     const [x0c, y0c] = toVid(e);
     if (mode === 'objectos') {
       const xd0 = vw - x0c;
@@ -2257,7 +2381,8 @@ async function boot() {
     poseHeadRigs = [makeHeadRig(), makeHeadRig()];
     brainPanel = createBrainPanel(THREE, { geo: GEO.brain, lobes: BRAIN_LOBES, overview: BRAIN_OVERVIEW, host: stage, sci: () => !!S.sci, speak,
       onSelect: i => { if (i >= 0 && !$('#card').hidden && LOBE_IDX[$('#card').dataset.id] !== i) $('#card').hidden = true; },
-      onClose: () => { S.brainPanel = false; saveSettings(); } });
+      onClose: () => { S.brainPanel = false; if (S.brainAction) setBrainAction(false); saveSettings(); },
+      onAction: on => setBrainAction(on) });
     if (S.brainPanel) brainPanel.open();
     handRigs = [makeHandRig(), makeHandRig()];
     applyLook();
@@ -2338,4 +2463,4 @@ window.addEventListener('drop', e => {
 boot();
 
 // para testes e curiosos na consola
-window.espelho = { S, get brainPanel() { return brainPanel; }, faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
+window.espelho = { get check() { return check; }, S, get brainPanel() { return brainPanel; }, get profiles() { return profiles; }, brainAct, setBrainAction, measureActivity: () => measureActivity(1 / 30, primaryFace()), faces, hands, get body() { return body; }, bodies, objTracks, getHunt: () => hunt, getObjRaw: () => objRaw, refreshUI, setMode, takePhoto, startFile, DEBUG, collectTargets: (o) => collectTargets(primaryFace(), o), bodyTargets: (o) => bodyTargets(o), getCh: () => ch, startLevel, LADDER, gaze: () => primaryFace() && gazeOf(primaryFace()), landmarkTargets: (id, side) => landmarkTargets(primaryFace(), id, side), toggleRec };
